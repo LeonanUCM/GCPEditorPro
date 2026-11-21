@@ -663,11 +663,20 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
         this.filterImages();
         window.dispatchEvent(new CustomEvent('smartImagesLayoutChanged'));
 
-        const basis = located.from === 'rays' ? `the point was located with the ${byHand.length} images tagged by hand` :
-                      located.from === 'one' ? `the point was located with ${byHand.length} image tagged by hand, at the take-off level` :
-                      'the point is the map coordinate at the take-off level (tag 2 images by hand and run again for a better result)';
-        this.exifResult = `${suggested} suggested (yellow, adjust each one), ${notVisible} do not see the point` +
-            (noPose > 0 ? `, ${noPose} without GPS/gimbal data` : '') + `; ${basis}.`;
+        // What was searched: the button only looks at the images that pass the distance filter
+        const searched = this.filterByDistance ?
+            `Searched the ${images.length} images within ${this.filterDistance} m of "${this.gcp.name}", of ${this.rawImages.length} loaded` :
+            `Searched the ${images.length} loaded images`;
+        const basis = located.from === 'rays' ? `, using the ${byHand.length} images tagged by hand to locate the point` :
+                      located.from === 'one' ? `, using the image tagged by hand to locate the point` : '';
+        let result = `${searched}${basis}: ${suggested} suggested (yellow, adjust each one), ${notVisible} do not see the point` +
+            (noPose > 0 ? `, ${noPose} without GPS/gimbal data` : '') + '.';
+        if (suggested === 0) {
+            result += this.filterByDistance ?
+                ' No photo of this place among them: load the photos of this area with the file box above (opening a GCP file loads only the photos it lists), or raise the distance filter.' :
+                ' No photo of this place among them: load the photos of this area with the file box above.';
+        }
+        this.exifResult = result;
 
         this.setProgress("", 1, true);
     }
