@@ -12,6 +12,7 @@ import { GcpsDetectorService } from '../gcps-detector.service';
 import { CoordsXY, CoordsXYZ, GPSCoords } from '../../shared/common';
 import { getDistanceFromLatLonInM, toHumanDistance } from 'src/shared/utils';
 import { SmartimageComponent } from '../smartimage/smartimage.component';
+import { Camera, readPhotoPose, cameraFromPose, project, locatePoint } from '../exif-projector';
 
 const clone = rfdc();
 
@@ -48,6 +49,10 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
     public rawImages: ImageDescriptor[] = [];
 
     public page: number = 1;
+
+    // "Detect GCPs based on GPS/EXIF": camera of each photo (null = no pose in the file) and last result
+    private exifCameras: { [imgName: string]: Camera } = {};
+    public exifResult: string = null;
 
     // This page size is a "safe" number, we could use a bigger one but we risk to nuke the browser
     public pageSize: number = 10;
@@ -454,6 +459,7 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
 
     public pin(location: CoordsXY, desc: ImageDescriptor): void {
         desc.isTagged = true;
+        desc.suggested = false;
         desc.image.imX = location.x;
         desc.image.imY = location.y;
         desc.pinLocation = location;
@@ -461,6 +467,7 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
 
     public unpin(desc: ImageDescriptor): void{
         desc.isTagged = false;
+        desc.suggested = false;
         desc.image.imX = desc.image.imY = 0;
         desc.pinLocation = null;
         
@@ -504,7 +511,7 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
 
         if (desc.imageUrl !== null) {
             if (desc.isTagged) {
-                cls = 'badge-success';
+                cls = desc.suggested ? 'badge-warning' : 'badge-success';
             } else {
                 // if (desc.otherGcps.length !== 0) {
                 cls = 'badge-info';
@@ -527,6 +534,8 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
 
         if (desc.distance && this.filterByDistance)
             name = name + ' (' + toHumanDistance(desc.distance) + ')';
+
+        if (desc.isTagged && desc.suggested) name = name + ' - suggested';
 
         return name;
     }
@@ -597,6 +606,72 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
 
     }
 
+    /**
+     * Suggests the place of the GCP in every image that passed the distance filter, from the pose the
+     * drone wrote in each photo (see exif-projector.ts). Images tagged by hand are kept and used to
+     * locate the point; earlier suggestions are computed again, so tagging a couple of photos by hand
+     * and running it again improves the rest.
+     */
+    public async detectByExif() {
+
+        this.exifResult = null;
+        this.setProgress("Reading the pose of the photos", 0, false, true);
+
+        const images = this.images.slice();
+
+        for (let i = 0; i < images.length; i++) {
+            const name = images[i].image.imgName;
+            if (this.exifCameras[name] !== undefined) continue;
+
+            if (this.requestedInterrupt) {
+                this.setProgress("Interrupted", i / images.length, true, false);
+                this.requestedInterrupt = false;
+                return;
+            }
+            if (i % 10 === 0) this.setProgress("Reading the pose of the photos (" + (i + 1) + "/" + images.length + ")", i / images.length, false, true);
+
+            const info = this.storage.images.find(item => item.name === name);
+            const pose = info && info.file ? await readPhotoPose(info.file, info.url) : null;
+            this.exifCameras[name] = pose ? cameraFromPose(pose, this.gcpCoords.y, this.gcpCoords.x) : null;
+        }
+
+        const byHand = images.filter(item => item.isTagged && !item.suggested && this.exifCameras[item.image.imgName]);
+        const located = locatePoint(byHand.map(item => ({ cam: this.exifCameras[item.image.imgName], x: item.image.imX, y: item.image.imY })));
+
+        let suggested = 0, notVisible = 0, noPose = 0;
+
+        for (const item of images) {
+            if (item.isTagged && !item.suggested) continue;
+
+            const cam = this.exifCameras[item.image.imgName];
+            if (!cam) {
+                noPose++;
+                continue;
+            }
+
+            const where = project(cam, located.point);
+            if (where) {
+                this.pin(where, item);
+                item.suggested = true;
+                suggested++;
+            } else {
+                if (item.suggested) this.unpin(item);
+                notVisible++;
+            }
+        }
+
+        this.filterImages();
+        window.dispatchEvent(new CustomEvent('smartImagesLayoutChanged'));
+
+        const basis = located.from === 'rays' ? `the point was located with the ${byHand.length} images tagged by hand` :
+                      located.from === 'one' ? `the point was located with ${byHand.length} image tagged by hand, at the take-off level` :
+                      'the point is the map coordinate at the take-off level (tag 2 images by hand and run again for a better result)';
+        this.exifResult = `${suggested} suggested (yellow, adjust each one), ${notVisible} do not see the point` +
+            (noPose > 0 ? `, ${noPose} without GPS/gimbal data` : '') + `; ${basis}.`;
+
+        this.setProgress("", 1, true);
+    }
+
     public requestedInterrupt: boolean = false;
 
     public interrupt() {
@@ -639,5 +714,6 @@ class ImageDescriptor {
     public otherGcps: string[];
     public coords: Promise<GPSCoords>;
     public distance: number;
+    public suggested?: boolean;
 }
 

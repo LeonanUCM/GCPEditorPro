@@ -51,6 +51,16 @@
             Detect GCPs
         </button>
     </div>
+    <div class="col-md-auto">
+        <button id="detectExif" title="Suggest the place of the GCP in the images that pass the distance filter, from the GPS position and gimbal angles written in each photo. Images tagged by hand are kept and improve the suggestion." [disabled]="images === null || images.length === 0 ? true : null" class="btn btn-info" type="button" (click)="detectByExif()">
+            <fa-icon icon="search-location" class="mr-2"></fa-icon>
+            Detect GCPs based on GPS/EXIF
+        </button>
+    </div>
+</div>
+<div class="alert alert-info mt-2 mb-0" id="exifResult" *ngIf="exifResult">
+    <button type="button" class="close" aria-label="Close" (click)="exifResult = null"><span aria-hidden="true">&times;</span></button>
+    <fa-icon icon="info-circle" class="mr-2"></fa-icon>{{exifResult}}
 </div>
 <div class="row mt-2">
     <div class="col" #grid *ngIf="images !== null">
