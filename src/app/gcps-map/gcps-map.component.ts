@@ -1,7 +1,7 @@
 import { Component, OnInit, ApplicationRef, ViewEncapsulation, NgZone, ViewChild, TemplateRef } from '@angular/core';
 import { NgbModal } from '@ng-bootstrap/ng-bootstrap';
 import { StorageService } from '../storage.service';
-import { GCP } from '../gcps-utils.service';
+import { GCP, GcpsUtilsService } from '../gcps-utils.service';
 import { Router } from '@angular/router';
 import { icon, Map, marker } from 'leaflet';
 import * as L from 'leaflet';
@@ -13,6 +13,10 @@ import { icon as faIcon } from '@fortawesome/fontawesome-svg-core';
 import { faExpand, faKeyboard } from '@fortawesome/free-solid-svg-icons';
 
 import Basemaps from './Basemaps';
+import { OrthoTask, OrthoSource, listOrthoTasks, taskOrthoSource, geoTiffOrthoSource } from './OrthophotoBasemap';
+
+const ORTHO_BASEMAP = 'Orthophoto (WebODM / GeoTIFF)';
+const ORTHO_TASK_KEY = 'orthoBasemapTask';
 
 @Component({
     selector: 'app-gcps-map',
@@ -33,13 +37,27 @@ export class GcpsMapComponent implements OnInit {
     public newGcp = { name: '', x: '', y: '', z: '' };
     public newGcpError: string = null;
 
+    // Orthophoto base map: a WebODM task or a local GeoTIFF (see OrthophotoBasemap.ts)
+    @ViewChild('orthoModal') orthoModal: TemplateRef<any>;
+    public ortho = {
+        tasks: [] as OrthoTask[],
+        tasksState: 'loading' as 'loading' | 'ready' | 'unavailable',
+        task: null as OrthoTask,
+        current: null as string,
+        busy: false,
+        error: null as string
+    };
+    private orthoGroup: L.LayerGroup = null;
+    private orthoBounds: L.LatLngBounds = null;
+    private orthoModalOpen = false;
+
     // Set the initial set of displayed layers (we could also use the leafletLayers input binding for this)
     options = {
         zoom: 7,
         zoomControl: false
     };
 
-    constructor(private storage: StorageService, private router: Router, private appRef: ApplicationRef, private ngZone: NgZone, private modalService: NgbModal) {
+    constructor(private storage: StorageService, private router: Router, private appRef: ApplicationRef, private ngZone: NgZone, private modalService: NgbModal, private gcpsUtils: GcpsUtilsService) {
         if (typeof storage.gcps === 'undefined' ||
             typeof storage.imageGcps === 'undefined' ||
             typeof storage.projection === 'undefined') {
@@ -246,12 +264,41 @@ https://a.tile.openstreetmap.org/{z}/{x}/{y}.png
         basemaps["Custom"] = customLayer;
         basemaps["None"] = L.layerGroup();
 
-        new Autolayers({
+        // Orthophoto of a WebODM task or of a local GeoTIFF. Selecting it restores the last source
+        // or asks for one; clicking it again while selected asks for another one.
+        const orthoGroup = this.orthoGroup = L.layerGroup();
+        orthoGroup.on("add", () => {
+            if (orthoGroup.getLayers().length > 0) {
+                this.showOrtho();
+                return;
+            }
+            let saved: OrthoTask = null;
+            try { saved = JSON.parse(localStorage.getItem(ORTHO_TASK_KEY)); } catch (e) {}
+            if (saved && saved.id) {
+                // A task deleted since then, or no WebODM around: ask
+                this.setOrthoSource(taskOrthoSource(saved)).catch(() => this.openOrthoModal());
+            } else {
+                this.openOrthoModal();
+            }
+        });
+        basemaps[ORTHO_BASEMAP] = orthoGroup;
+
+        const layersControl = new Autolayers({
             overlays: {},
             selectedOverlays: [],
             baseLayers: basemaps
           }).addTo(map);
 
+        // Capture phase: the control stops the click before it bubbles
+        layersControl.getContainer().addEventListener("click", (e: MouseEvent) => {
+            const target = e.target as any;
+            if (target && target.tagName === "INPUT" && target.layerId === L.stamp(orthoGroup) && map.hasLayer(orthoGroup)) {
+                this.openOrthoModal();
+            }
+        }, true);
+
+        // The last orthophoto was a local file: it cannot be opened again without asking
+        if (selectedBasemap === ORTHO_BASEMAP && !localStorage.getItem(ORTHO_TASK_KEY)) selectedBasemap = null;
         if (!basemaps[selectedBasemap]) selectedBasemap = Basemaps[0].label;
         basemaps[selectedBasemap].addTo(map);
         map.on("baselayerchange", (e: any) => localStorage.setItem("basemap", e.name));
@@ -398,6 +445,78 @@ https://a.tile.openstreetmap.org/{z}/{x}/{y}.png
         const added = this.gcps.find(g => g.gcp.name === name);
         this.map.setView([lat, lng], Math.max(this.map.getZoom(), 18), { animate: false });
         if (added) this.select(added);
+    }
+
+    // Move the map only when the orthophoto is out of sight
+    private showOrtho(): void {
+        if (this.orthoBounds && this.map.hasLayer(this.orthoGroup) && !this.map.getBounds().intersects(this.orthoBounds)) {
+            this.map.fitBounds(this.orthoBounds, { animate: false });
+        }
+    }
+
+    private setOrthoSource(source: Promise<OrthoSource>): Promise<void> {
+        return source.then(src => {
+            this.orthoGroup.clearLayers();
+            this.orthoGroup.addLayer(src.layer);
+            if (this.map.hasLayer(this.orthoGroup)) (src.layer as L.GridLayer).bringToBack();
+            this.orthoBounds = src.bounds;
+            this.ortho.current = src.name;
+            this.showOrtho();
+        });
+    }
+
+    openOrthoModal(): void {
+        if (this.orthoModalOpen) return;
+        this.ngZone.run(() => {
+            this.orthoModalOpen = true;
+            this.ortho.error = null;
+            this.ortho.busy = false;
+            this.ortho.tasksState = 'loading';
+
+            const done = () => this.orthoModalOpen = false;
+            this.modalService.open(this.orthoModal, { ariaLabelledBy: 'ortho-modal-title' }).result.then(done, done);
+
+            listOrthoTasks().then(tasks => {
+                let saved: OrthoTask = null;
+                try { saved = JSON.parse(localStorage.getItem(ORTHO_TASK_KEY)); } catch (e) {}
+                this.ortho.tasks = tasks;
+                this.ortho.task = (saved && tasks.find(t => t.id === saved.id)) || tasks[0] || null;
+                this.ortho.tasksState = 'ready';
+            }).catch(() => {
+                this.ortho.tasks = [];
+                this.ortho.task = null;
+                this.ortho.tasksState = 'unavailable';
+            });
+        });
+    }
+
+    private useOrtho(modal, source: Promise<OrthoSource>, task: OrthoTask): void {
+        this.ortho.error = null;
+        this.ortho.busy = true;
+        this.setOrthoSource(source).then(() => {
+            // A local file cannot be opened again without asking: only a task is remembered
+            if (task) localStorage.setItem(ORTHO_TASK_KEY, JSON.stringify({ projectId: task.projectId, id: task.id, name: task.name }));
+            else localStorage.removeItem(ORTHO_TASK_KEY);
+            this.ortho.busy = false;
+            modal.close();
+        }).catch(err => {
+            this.ortho.busy = false;
+            this.ortho.error = (err && err.message) || 'Cannot open this orthophoto.';
+        });
+    }
+
+    useOrthoTask(modal): void {
+        if (this.ortho.task) this.useOrtho(modal, taskOrthoSource(this.ortho.task), this.ortho.task);
+    }
+
+    useOrthoFile(modal, event): void {
+        const file: File = event.target.files && event.target.files[0];
+        if (!file) return;
+        const epsgToProj4 = (code: number) => {
+            const prj = this.gcpsUtils.getProjection('EPSG:' + code);
+            return prj ? prj.eq : null;
+        };
+        this.useOrtho(modal, geoTiffOrthoSource(file, epsgToProj4), null);
     }
 
     select(gcp: GcpInfo) {

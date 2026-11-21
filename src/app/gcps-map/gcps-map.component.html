@@ -70,3 +70,46 @@
         </div>
     </form>
 </ng-template>
+
+<ng-template #orthoModal let-modal>
+    <div class="modal-header">
+        <h4 class="modal-title" id="ortho-modal-title">Orthophoto base map</h4>
+        <button type="button" class="close" aria-label="Close" (click)="modal.dismiss()">
+            <span aria-hidden="true">&times;</span>
+        </button>
+    </div>
+    <div class="modal-body">
+        <p class="text-muted mb-3" *ngIf="ortho.current">Showing now: <strong>{{ortho.current}}</strong></p>
+
+        <div class="form-group">
+            <label for="orthoTask">WebODM task</label>
+            <div class="input-group" *ngIf="ortho.tasksState === 'ready' && ortho.tasks.length > 0">
+                <select class="custom-select" id="orthoTask" name="orthoTask" [(ngModel)]="ortho.task" [disabled]="ortho.busy">
+                    <option *ngFor="let task of ortho.tasks" [ngValue]="task">{{task.label}}</option>
+                </select>
+                <div class="input-group-append">
+                    <button type="button" class="btn btn-primary" id="orthoTaskShow" [disabled]="ortho.busy || !ortho.task" (click)="useOrthoTask(modal)">Show</button>
+                </div>
+            </div>
+            <div class="text-muted" *ngIf="ortho.tasksState === 'loading'">Loading tasks...</div>
+            <div class="text-muted" *ngIf="ortho.tasksState === 'ready' && ortho.tasks.length === 0">No task with an orthophoto.</div>
+            <div class="text-muted" *ngIf="ortho.tasksState === 'unavailable'">Not available: the editor is not running inside WebODM.</div>
+        </div>
+
+        <div class="form-group mb-0">
+            <label for="orthoFile">Local GeoTIFF</label>
+            <div class="custom-file">
+                <input type="file" class="custom-file-input" id="orthoFile" accept=".tif,.tiff,image/tiff" [disabled]="ortho.busy" (change)="useOrthoFile(modal, $event)">
+                <label class="custom-file-label mb-0" for="orthoFile">Choose an orthophoto .tif file</label>
+            </div>
+            <small class="form-text text-muted">The file stays on this computer. It is not uploaded.</small>
+        </div>
+
+        <div class="alert alert-danger mt-3 mb-0" *ngIf="ortho.error">
+            <fa-icon icon="exclamation-triangle" class="mr-2"></fa-icon>{{ortho.error}}
+        </div>
+    </div>
+    <div class="modal-footer">
+        <button type="button" class="btn btn-outline-dark" (click)="modal.dismiss()">Close</button>
+    </div>
+</ng-template>
