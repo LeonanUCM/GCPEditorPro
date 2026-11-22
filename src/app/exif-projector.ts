@@ -50,13 +50,38 @@ const dot = (a: Vec, b: Vec) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const cross = (a: Vec, b: Vec): Vec => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 const mix = (a: Vec, ka: number, b: Vec, kb: number): Vec => [a[0] * ka + b[0] * kb, a[1] * ka + b[1] * kb, a[2] * ka + b[2] * kb];
 
+// Pixel size written in the JPEG frame header (SOF), without decoding the picture: reading the pose of
+// a whole flight must not decode hundreds of 12 MP photos
+async function jpegSize(file: File): Promise<{ w: number, h: number }> {
+    try {
+        const d = new DataView(await new Response(file.slice(0, 1024 * 1024)).arrayBuffer());
+        if (d.byteLength < 4 || d.getUint16(0) !== 0xFFD8) return null;
+        let p = 2;
+        while (p + 9 < d.byteLength) {
+            if (d.getUint8(p) !== 0xFF) return null;
+            const marker = d.getUint8(p + 1);
+            if (marker === 0xFF) { p++; continue; }
+            // SOF0-SOF15, except DHT (C4), JPG (C8) and DAC (CC)
+            if (marker >= 0xC0 && marker <= 0xCF && marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC) {
+                const h = d.getUint16(p + 5), w = d.getUint16(p + 7);
+                return w > 0 && h > 0 ? { w, h } : null;
+            }
+            if (marker === 0xDA) return null;
+            p += 2 + d.getUint16(p + 2);
+        }
+    } catch (e) { }
+    return null;
+}
+
 // Pixel size of the file (the EXIF may still carry the size of the original after a resize)
-function imageSize(file: File, url: string, tags: any): Promise<{ w: number, h: number }> {
+async function imageSize(file: File, url: string, tags: any): Promise<{ w: number, h: number }> {
     const fromTags = () => {
         const w = num(tags.ImageWidth) || num(tags.ExifImageWidth), h = num(tags.ImageHeight) || num(tags.ExifImageHeight);
         return w > 0 && h > 0 ? { w, h } : null;
     };
-    if (/\.tiff?$/i.test(file.name) || !url) return Promise.resolve(fromTags());
+    if (/\.tiff?$/i.test(file.name) || !url) return fromTags();
+    const header = await jpegSize(file);
+    if (header) return header;
 
     return new Promise(resolve => {
         const img = new Image();
@@ -116,6 +141,19 @@ export function cameraFromPose(pose: PhotoPose, lat0: number, lng0: number): Cam
 
     const focal = pose.focal35 / FULL_FRAME_DIAGONAL * Math.hypot(pose.width, pose.height_px);
     return { center, forward, right, down, focal, width: pose.width, height: pose.height_px };
+}
+
+/**
+ * Distance on the ground (meters) from the GCP to the place the photo looks at: where the optical axis
+ * meets the take-off level. For a nadir photo it is the distance to the drone; an oblique photo looks at
+ * a place far from the drone, and the distance to the drone would leave it out of the distance filter.
+ */
+export function viewDistance(cam: Camera): number {
+    const h = cam.center[2];
+    // Looking at the horizon or flying under the take-off level: the distance to the drone
+    if (cam.forward[2] > -0.05 || h <= 0) return Math.hypot(cam.center[0], cam.center[1]);
+    const t = Math.min(-h / cam.forward[2], 10 * h);
+    return Math.hypot(cam.center[0] + t * cam.forward[0], cam.center[1] + t * cam.forward[1]);
 }
 
 /** Pixel where the point falls, or null when it is behind the camera or outside the frame. */

@@ -12,7 +12,7 @@ import { GcpsDetectorService } from '../gcps-detector.service';
 import { CoordsXY, CoordsXYZ, GPSCoords } from '../../shared/common';
 import { getDistanceFromLatLonInM, toHumanDistance } from 'src/shared/utils';
 import { SmartimageComponent } from '../smartimage/smartimage.component';
-import { Camera, readPhotoPose, cameraFromPose, project, locatePoint } from '../exif-projector';
+import { Camera, readPhotoPose, cameraFromPose, project, locatePoint, viewDistance } from '../exif-projector';
 
 const clone = rfdc();
 
@@ -617,25 +617,36 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
         this.exifResult = null;
         this.setProgress("Reading the pose of the photos", 0, false, true);
 
-        const images = this.images.slice();
+        // The pose of every loaded image: the distance filter needs it before choosing the images
+        const all = this.rawImages.slice();
 
-        for (let i = 0; i < images.length; i++) {
-            const name = images[i].image.imgName;
+        for (let i = 0; i < all.length; i++) {
+            const name = all[i].image.imgName;
             if (this.exifCameras[name] !== undefined) continue;
 
             if (this.requestedInterrupt) {
-                this.setProgress("Interrupted", i / images.length, true, false);
+                this.setProgress("Interrupted", i / all.length, true, false);
                 this.requestedInterrupt = false;
                 return;
             }
-            if (i % 10 === 0) this.setProgress("Reading the pose of the photos (" + (i + 1) + "/" + images.length + ")", i / images.length, false, true);
+            if (i % 10 === 0) this.setProgress("Reading the pose of the photos (" + (i + 1) + "/" + all.length + ")", i / all.length, false, true);
 
             const info = this.storage.images.find(item => item.name === name);
             const pose = info && info.file ? await readPhotoPose(info.file, info.url) : null;
             this.exifCameras[name] = pose ? cameraFromPose(pose, this.gcpCoords.y, this.gcpCoords.x) : null;
         }
 
-        const byHand = images.filter(item => item.isTagged && !item.suggested && this.exifCameras[item.image.imgName]);
+        // Distance of each image = from the GCP to the place the photo looks at, not to the drone: an
+        // oblique photo that sees the point is taken far from it and the old distance filtered it out
+        for (const item of all) {
+            const cam = this.exifCameras[item.image.imgName];
+            if (cam) item.distance = viewDistance(cam);
+        }
+        this.filterImages();
+        const images = this.images.slice();
+
+        // Every image tagged by hand locates the point, also the ones the distance filter hides
+        const byHand = all.filter(item => item.isTagged && !item.suggested && this.exifCameras[item.image.imgName]);
         const located = locatePoint(byHand.map(item => ({ cam: this.exifCameras[item.image.imgName], x: item.image.imX, y: item.image.imY })));
 
         let suggested = 0, notVisible = 0, noPose = 0;
@@ -665,7 +676,7 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
 
         // What was searched: the button only looks at the images that pass the distance filter
         const searched = this.filterByDistance ?
-            `Searched the ${images.length} images within ${this.filterDistance} m of "${this.gcp.name}", of ${this.rawImages.length} loaded` :
+            `Searched the ${images.length} images that look within ${this.filterDistance} m of "${this.gcp.name}", of ${this.rawImages.length} loaded` :
             `Searched the ${images.length} loaded images`;
         const basis = located.from === 'rays' ? `, using the ${byHand.length} images tagged by hand to locate the point` :
                       located.from === 'one' ? `, using the image tagged by hand to locate the point` : '';
