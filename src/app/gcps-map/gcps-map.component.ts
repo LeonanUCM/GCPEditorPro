@@ -50,7 +50,6 @@ export class GcpsMapComponent implements OnInit {
     private orthoGroup: L.LayerGroup = null;
     private orthoBounds: L.LatLngBounds = null;
     private orthoModalOpen = false;
-    private orthoButton: HTMLButtonElement = null;
 
     // Set the initial set of displayed layers (we could also use the leafletLayers input binding for this)
     options = {
@@ -265,8 +264,9 @@ https://a.tile.openstreetmap.org/{z}/{x}/{y}.png
         basemaps["Custom"] = customLayer;
         basemaps["None"] = L.layerGroup();
 
-        // Orthophoto of a WebODM task or of a local GeoTIFF. Selecting it restores the last source
-        // or asks for one; clicking it again while selected asks for another one.
+        // Orthophoto of a WebODM task or of a local GeoTIFF. Every click on its option opens the dialog
+        // to choose the source, with the current task selected; meanwhile the last source is shown.
+        // Without a click (page load) the last source comes back without asking.
         const orthoGroup = this.orthoGroup = L.layerGroup();
         orthoGroup.on("add", () => {
             if (orthoGroup.getLayers().length > 0) {
@@ -293,40 +293,15 @@ https://a.tile.openstreetmap.org/{z}/{x}/{y}.png
         // Capture phase: the control stops the click before it bubbles
         layersControl.getContainer().addEventListener("click", (e: MouseEvent) => {
             const target = e.target as any;
-            if (target && target.tagName === "INPUT" && target.layerId === L.stamp(orthoGroup) && map.hasLayer(orthoGroup)) {
+            if (target && target.tagName === "INPUT" && target.layerId === L.stamp(orthoGroup)) {
                 this.openOrthoModal();
             }
         }, true);
-
-        // A button on the map, always in sight while the orthophoto is the base map: the name of the
-        // orthophoto shown and the way to choose another one (clicking the selected option again
-        // also works, but nothing on the screen says so)
-        const OrthoButton = L.Control.extend({
-            options: { position: 'bottomleft' },
-            onAdd: () => {
-                const button = this.orthoButton = L.DomUtil.create('button', 'btn btn-sm btn-light ortho-change') as HTMLButtonElement;
-                button.type = 'button';
-                button.id = 'orthoChange';
-                button.style.maxWidth = '60vw';
-                button.style.overflow = 'hidden';
-                button.style.textOverflow = 'ellipsis';
-                button.style.whiteSpace = 'nowrap';
-                button.style.boxShadow = '0 1px 5px rgba(0,0,0,0.4)';
-                L.DomEvent.disableClickPropagation(button);
-                L.DomEvent.on(button, 'click', () => this.openOrthoModal());
-                return button;
-            }
-        });
-        new OrthoButton().addTo(map);
-        // The control adds the new base map before it removes the old one: look after both
-        orthoGroup.on("add remove", () => setTimeout(() => this.updateOrthoButton(), 0));
-        this.updateOrthoButton();
 
         // The last orthophoto was a local file: it cannot be opened again without asking
         if (selectedBasemap === ORTHO_BASEMAP && !localStorage.getItem(ORTHO_TASK_KEY)) selectedBasemap = null;
         if (!basemaps[selectedBasemap]) selectedBasemap = Basemaps[0].label;
         basemaps[selectedBasemap].addTo(map);
-        this.updateOrthoButton();
         map.on("baselayerchange", (e: any) => localStorage.setItem("basemap", e.name));
 
         // Add markers control
@@ -473,14 +448,6 @@ https://a.tile.openstreetmap.org/{z}/{x}/{y}.png
         if (added) this.select(added);
     }
 
-    private updateOrthoButton(): void {
-        if (!this.orthoButton) return;
-        const active = !!this.map && this.map.hasLayer(this.orthoGroup);
-        this.orthoButton.style.display = active ? '' : 'none';
-        this.orthoButton.textContent = this.ortho.current ? 'Change orthophoto (now: ' + this.ortho.current + ')' : 'Choose orthophoto';
-        this.orthoButton.title = 'Choose another WebODM task or a local GeoTIFF';
-    }
-
     // Move the map only when the orthophoto is out of sight
     private showOrtho(): void {
         if (this.orthoBounds && this.map.hasLayer(this.orthoGroup) && !this.map.getBounds().intersects(this.orthoBounds)) {
@@ -495,7 +462,6 @@ https://a.tile.openstreetmap.org/{z}/{x}/{y}.png
             if (this.map.hasLayer(this.orthoGroup)) (src.layer as L.GridLayer).bringToBack();
             this.orthoBounds = src.bounds;
             this.ortho.current = src.name;
-            this.updateOrthoButton();
             this.showOrtho();
         });
     }
