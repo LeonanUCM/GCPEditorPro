@@ -156,15 +156,29 @@ export function viewDistance(cam: Camera): number {
     return Math.hypot(cam.center[0] + t * cam.forward[0], cam.center[1] + t * cam.forward[1]);
 }
 
-/** Pixel where the point falls, or null when it is behind the camera or outside the frame. */
-export function project(cam: Camera, point: Vec, margin = 0): { x: number, y: number } {
+/**
+ * Pixel where the point falls, or null when it is behind the camera or outside the frame.
+ * @param outside the pose has an error of about 100 px in a 4096 px photo, so a point near the border may
+ *   come out just outside: up to this many pixels outside it is still accepted and placed on the border
+ * `offset` = distance from the center of the photo, 0 (center) to 1 (corner), before placing on the border.
+ */
+export function project(cam: Camera, point: Vec, outside = 0): { x: number, y: number, offset: number } {
     const v: Vec = [point[0] - cam.center[0], point[1] - cam.center[1], point[2] - cam.center[2]];
     const z = dot(v, cam.forward);
     if (z <= 0.1) return null;
     const x = cam.width / 2 + cam.focal * dot(v, cam.right) / z;
     const y = cam.height / 2 + cam.focal * dot(v, cam.down) / z;
-    if (x < margin || y < margin || x > cam.width - margin || y > cam.height - margin) return null;
-    return { x, y };
+    if (x < -outside || y < -outside || x > cam.width + outside || y > cam.height + outside) return null;
+    return {
+        x: Math.min(Math.max(x, 1), cam.width - 1),
+        y: Math.min(Math.max(y, 1), cam.height - 1),
+        offset: centerOffset(cam, x, y)
+    };
+}
+
+/** Distance of a pixel from the center of the photo: 0 = center, 1 = corner. */
+export function centerOffset(cam: Camera, x: number, y: number): number {
+    return Math.hypot(x - cam.width / 2, y - cam.height / 2) / Math.hypot(cam.width / 2, cam.height / 2);
 }
 
 function ray(cam: Camera, x: number, y: number): Vec {

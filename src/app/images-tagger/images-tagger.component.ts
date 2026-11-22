@@ -12,7 +12,10 @@ import { GcpsDetectorService } from '../gcps-detector.service';
 import { CoordsXY, CoordsXYZ, GPSCoords } from '../../shared/common';
 import { getDistanceFromLatLonInM, toHumanDistance } from 'src/shared/utils';
 import { SmartimageComponent } from '../smartimage/smartimage.component';
-import { Camera, readPhotoPose, cameraFromPose, project, locatePoint, viewDistance } from '../exif-projector';
+import { Camera, readPhotoPose, cameraFromPose, project, locatePoint, viewDistance, centerOffset } from '../exif-projector';
+
+// How far outside the frame a projected point is still suggested, as a fraction of the longer side
+const EXIF_OUTSIDE = 0.04;
 
 const clone = rfdc();
 
@@ -274,25 +277,20 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
         
         this.page = 1;
 
+        // Tagged first. Inside each group: the images where the point falls closer to the center of
+        // the photo first (known after "Detect GCPs based on GPS/EXIF"), then by distance, then by name
+        const order = (a: ImageDescriptor, b: ImageDescriptor) => {
+            if (a.isTagged !== b.isTagged) return a.isTagged ? -1 : 1;
+            const ca = a.centerOffset != null, cb = b.centerOffset != null;
+            if (ca && cb && a.centerOffset !== b.centerOffset) return a.centerOffset > b.centerOffset ? 1 : -1;
+            if (ca !== cb) return ca ? -1 : 1;
+            if (this.filterByDistance && a.distance !== null && b.distance !== null && a.distance !== b.distance) return a.distance > b.distance ? 1 : -1;
+            return a.image.imgName.localeCompare(b.image.imgName);
+        };
+
         this.images = (this.filterByDistance) ? this.rawImages
             .filter(img => img.distance == null || img.distance < this.filterDistance)
-            .sort((a, b) => {
-                if ((!a.isTagged && !b.isTagged) || (a.isTagged && b.isTagged)){
-                    if (a.distance !== null && b.distance !== null){
-                        return a.distance > b.distance ? 1 : -1
-                    }else{
-                        return a.image.imgName.localeCompare(b.image.imgName);
-                    }
-                }else if (!a.isTagged && b.isTagged){
-                    return 1;
-                }else{
-                    return -1;
-                }
-            }) : this.rawImages.sort((a, b) => {
-                if ((!a.isTagged && !b.isTagged) || (a.isTagged && b.isTagged)) return a.image.imgName.localeCompare(b.image.imgName);
-                else if (!a.isTagged && b.isTagged) return 1;
-                else return -1;
-            });
+            .sort(order) : this.rawImages.sort(order);
 
         if (this.filterByDistance){
             localStorage.setItem("filterDistance", this.filterDistance.toString());
@@ -651,20 +649,30 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
 
         let suggested = 0, notVisible = 0, noPose = 0;
 
-        for (const item of images) {
-            if (item.isTagged && !item.suggested) continue;
+        let onBorder = 0;
 
+        for (const item of all) item.centerOffset = null;
+
+        for (const item of images) {
             const cam = this.exifCameras[item.image.imgName];
+
+            if (item.isTagged && !item.suggested) {
+                if (cam) item.centerOffset = centerOffset(cam, item.image.imX, item.image.imY);
+                continue;
+            }
             if (!cam) {
                 noPose++;
                 continue;
             }
 
-            const where = project(cam, located.point);
+            // A point up to 4 % of the photo side outside the frame is kept, on the border
+            const where = project(cam, located.point, EXIF_OUTSIDE * Math.max(cam.width, cam.height));
             if (where) {
-                this.pin(where, item);
+                this.pin({ x: where.x, y: where.y }, item);
                 item.suggested = true;
+                item.centerOffset = where.offset;
                 suggested++;
+                if (where.offset > centerOffset(cam, where.x, where.y) + 1e-9) onBorder++;
             } else {
                 if (item.suggested) this.unpin(item);
                 notVisible++;
@@ -680,7 +688,8 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
             `Searched the ${images.length} loaded images`;
         const basis = located.from === 'rays' ? `, using the ${byHand.length} images tagged by hand to locate the point` :
                       located.from === 'one' ? `, using the image tagged by hand to locate the point` : '';
-        let result = `${searched}${basis}: ${suggested} suggested (yellow, adjust each one), ${notVisible} do not see the point` +
+        let result = `${searched}${basis}: ${suggested} suggested (yellow, adjust each one; ordered from the center of the photo to the border), ${notVisible} do not see the point` +
+            (onBorder > 0 ? `, ${onBorder} of the suggested are on the border of the photo: the point may be just outside (remove the tag if it is)` : '') +
             (noPose > 0 ? `, ${noPose} without GPS/gimbal data` : '') + '.';
         if (suggested === 0) {
             result += this.filterByDistance ?
@@ -735,5 +744,7 @@ class ImageDescriptor {
     public coords: Promise<GPSCoords>;
     public distance: number;
     public suggested?: boolean;
+    // Where the GCP falls in the photo: 0 = center, 1 = corner (null = not known)
+    public centerOffset?: number;
 }
 
