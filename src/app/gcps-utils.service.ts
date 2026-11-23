@@ -426,6 +426,8 @@ export class GCP {
     public northing: number;
     public easting: number;
     public elevation: number;
+    // Where the GCP was before it was moved on the map (see "Move" in gcps-map.component.ts)
+    public movedFrom?: { easting: number, northing: number };
 }
 
 export class TxtParseResult {

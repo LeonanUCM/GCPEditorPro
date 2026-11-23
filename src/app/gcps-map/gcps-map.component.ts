@@ -10,7 +10,7 @@ import Autolayers from './Leaflet.Autolayers/leaflet-autolayers';
 import SimpleMarkers from './Leaflet.SimpleMarkers/Control.SimpleMarkers';
 import Geocoder from './Leaflet.Geocoder/Control.Geocoder';
 import { icon as faIcon } from '@fortawesome/fontawesome-svg-core';
-import { faExpand, faKeyboard } from '@fortawesome/free-solid-svg-icons';
+import { faExpand, faKeyboard, faArrowsAlt, faUndo } from '@fortawesome/free-solid-svg-icons';
 
 import Basemaps from './Basemaps';
 import { OrthoTask, OrthoSource, listOrthoTasks, taskOrthoSource, geoTiffOrthoSource } from './OrthophotoBasemap';
@@ -143,6 +143,52 @@ export class GcpsMapComponent implements OnInit {
                     this.updateGcps();
                 }
             });
+
+            // Move: the marker can be dragged once to a new place. The GCP keeps its name, its elevation
+            // and the tags made in the images (deleting it and adding it again loses the tags).
+            // A moved GCP shows "Undo move" instead: back to where it was when the file was loaded (or
+            // where it was added).
+            const place = (easting: number, northing: number) => {
+                item.easting = easting;
+                item.northing = northing;
+                // Each tag carries the coordinates of its GCP to the exported file
+                this.storage.imageGcps.forEach(img => {
+                    if (img.gcpName === item.name) {
+                        img.geoX = easting;
+                        img.geoY = northing;
+                    }
+                });
+                this.updateGcps();
+                const moved = this.gcps.find(g => g.gcp.name === item.name);
+                if (moved) this.select(moved);
+            };
+
+            const moveBtn = document.createElement("a");
+            moveBtn.className = "btn btn-sm btn-light mt-2 ml-2 move-gcp";
+            if (item.movedFrom) {
+                moveBtn.title = "Put this GCP back where it was before it was moved. The tags in the images are kept.";
+                moveBtn.innerHTML = faIcon(faUndo).html.join('') + ' Undo move';
+                moveBtn.addEventListener("click", () => {
+                    const from = item.movedFrom;
+                    delete item.movedFrom;
+                    place(from.easting, from.northing);
+                });
+            } else {
+                moveBtn.title = "Move this GCP: drag the marker to the new place. The tags in the images are kept.";
+                moveBtn.innerHTML = faIcon(faArrowsAlt).html.join('') + ' Move';
+                moveBtn.addEventListener("click", () => {
+                    markerLayer.closePopup();
+                    markerLayer.dragging.enable();
+                    markerLayer.bindTooltip("Drag the marker to the new place", { permanent: true, direction: 'top', offset: [0, -41] }).openTooltip();
+                    markerLayer.once('dragend', () => {
+                        const { lat, lng } = markerLayer.getLatLng();
+                        const [x, y] = proj4(this.storage.projection.eq, [lng, lat]);
+                        item.movedFrom = { easting: item.easting, northing: item.northing };
+                        place(x, y);
+                    });
+                });
+            }
+            domText.append(moveBtn);
 
             const deleteBtn = document.createElement("a");
             deleteBtn.style.color = "#fff";
