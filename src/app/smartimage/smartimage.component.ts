@@ -87,6 +87,9 @@ export class SmartimageComponent implements AfterViewInit, OnDestroy {
     @Output()
     pinLocationChange = new EventEmitter<CoordsXY>();
 
+    // The visible part or the size of the image changed (see viewInfo)
+    @Output() viewChange = new EventEmitter<void>();
+
     pinLocationValue: CoordsXY = null;
 
     private L: number[] = IDENTITY;
@@ -243,6 +246,12 @@ export class SmartimageComponent implements AfterViewInit, OnDestroy {
         this.render();
     }
 
+    /** Image pixels per screen pixel in the view, and the size of the image on the screen. null = not loaded. */
+    public viewInfo(): { scale: number, width: number, height: number } {
+        if (this.naturalWidth === 0 || this.displayWidth === 0) return null;
+        return { scale: this.view.w / this.displayWidth, width: this.displayWidth, height: this.displayHeight };
+    }
+
     public clearPin(){
         this.pinLocation = null;
     }
@@ -310,6 +319,7 @@ export class SmartimageComponent implements AfterViewInit, OnDestroy {
         }
 
         this.renderCrosshair();
+        this.viewChange.emit();
     }
 
     private renderCrosshair() {

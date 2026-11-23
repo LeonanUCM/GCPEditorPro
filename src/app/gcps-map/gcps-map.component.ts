@@ -302,7 +302,11 @@ https://a.tile.openstreetmap.org/{z}/{x}/{y}.png
         if (selectedBasemap === ORTHO_BASEMAP && !localStorage.getItem(ORTHO_TASK_KEY)) selectedBasemap = null;
         if (!basemaps[selectedBasemap]) selectedBasemap = Basemaps[0].label;
         basemaps[selectedBasemap].addTo(map);
-        map.on("baselayerchange", (e: any) => localStorage.setItem("basemap", e.name));
+        this.rememberBaseLayer(basemaps[selectedBasemap]);
+        map.on("baselayerchange", (e: any) => {
+            localStorage.setItem("basemap", e.name);
+            this.rememberBaseLayer(e.layer);
+        });
 
         // Add markers control
         new SimpleMarkers({
@@ -378,6 +382,16 @@ https://a.tile.openstreetmap.org/{z}/{x}/{y}.png
                 this.updateGcps(true);
             }
         }, 1);
+    }
+
+    // The tagger shows the place of the GCP on the base layer in use here. A tile layer is made again
+    // from its URL; the layer of a local GeoTIFF has no URL and is used as it is (this map is gone by then).
+    private rememberBaseLayer(layer: L.Layer): void {
+        this.storage.mapBaseLayer = () => {
+            const inner: any = layer instanceof L.LayerGroup ? layer.getLayers()[0] : layer;
+            if (!inner) return null;
+            return inner instanceof L.TileLayer ? L.tileLayer((inner as any)._url, inner.options) : inner;
+        };
     }
 
     private nextGcpName(): string {

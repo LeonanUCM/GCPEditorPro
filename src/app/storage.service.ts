@@ -20,6 +20,8 @@ export class StorageService {
     public license: LicenseInfo;
     public prevNames: object = {};
     public mapView: { center: { lat: number, lng: number }, zoom: number } = null;
+    // Makes a Leaflet layer like the base layer shown on the GCP map (null = none), for the map reference of the tagger
+    public mapBaseLayer: () => any = null;
 
     private displayCache: { name: string, url: Promise<string> }[] = [];
 

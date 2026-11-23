@@ -38,6 +38,11 @@
             <fa-icon icon="compass" [transform]="northUp ? 'rotate--45' : null"></fa-icon>
         </button>
     </div>
+    <div class="col-md-auto">
+        <button id="mapReference" title="Map reference: show in front of the first photo the place where the GCP was put on the map, with the base map in use there, at the same scale as the first photo" class="btn" [ngClass]="{'btn-primary': showReference, 'btn-light': !showReference}" type="button" (click)="toggleReference()">
+            <fa-icon icon="map"></fa-icon>
+        </button>
+    </div>
     <div class="col-md-auto" (click)="$event.stopPropagation()">
         <div class="columns">
             <button title="Number of images displayed in each row" class="btn btn-light" type="button" (click)="toggleColumnsSettings()">
@@ -69,6 +74,19 @@
 </div>
 <div class="row mt-2">
     <div class="col" #grid *ngIf="images !== null">
+        <div *ngIf="showReference && images.length > 0" class="align-top d-inline-block text-center border" [style.width.%]="100 / columns">
+            <span class="badge d-block rounded-0 map-reference-title"><h5 class="m-1 title">Map: {{gcp.name}}</h5></span>
+            <div class="map-reference" [style.width.px]="referenceSize.width" [style.height.px]="referenceSize.height">
+                <div #referenceMap class="h-100"></div>
+                <svg class="map-reference-pin" viewBox="-16 -16 32 32" width="32" height="32">
+                    <circle r="14" fill="none" stroke="#000" stroke-opacity="0.85" stroke-width="3"></circle>
+                    <path d="M-12 0H-3M3 0H12M0 -12V-3M0 3V12" stroke="#000" stroke-opacity="0.6" stroke-width="3"></path>
+                    <path d="M-12 0H-3M3 0H12M0 -12V-3M0 3V12" stroke="#f00" stroke-width="1"></path>
+                    <circle r="0.75" fill="#f00"></circle>
+                </svg>
+                <div class="map-reference-empty text-muted" *ngIf="referenceEmpty">No base map: choose one on the GCP map</div>
+            </div>
+        </div>
         <div *ngFor="let desc of images | slice: (page-1) * pageSize : page * pageSize" class="align-top d-inline-block text-center border" [style.width.%]="100 / columns">
             <span class="badge d-block rounded-0" [ngClass]="getClass(desc)" [class.confirmable]="desc.isTagged && desc.suggested" [title]="desc.isTagged && desc.suggested ? 'Click to confirm this suggestion where it is' : ''" (click)="confirm(desc)">
                 <h5 class="m-1 title">{{getName(desc)}}
@@ -87,7 +105,7 @@
                     </div>
                 </a>
             </span>
-            <app-smartimage #smartImage *ngIf="desc.displayUrl" [src]="desc.displayUrl" [pinLocation]="desc.pinLocation" [size]="imageSize" [crosshair]="showCrosshair" [orient]="northUp ? desc.north : null"
+            <app-smartimage #smartImage *ngIf="desc.displayUrl" [src]="desc.displayUrl" [pinLocation]="desc.pinLocation" [size]="imageSize" [crosshair]="showCrosshair" [orient]="northUp ? desc.north : null" (viewChange)="scheduleReference()"
                 (pin)="pin($event, desc)" style="display: block; overflow: hidden">
             </app-smartimage>
             <div *ngIf="desc.imageUrl !== null && !desc.displayUrl" class="p-5 text-muted">

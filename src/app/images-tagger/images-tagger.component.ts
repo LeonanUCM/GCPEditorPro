@@ -6,6 +6,7 @@ import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser'
 
 import * as rfdc from 'rfdc';
 import proj4 from "proj4";
+import * as L from 'leaflet';
 import { NgbModal } from '@ng-bootstrap/ng-bootstrap';
 import { ConfirmDialogComponent } from '../confirm-dialog/confirm-dialog.component';
 import { GcpsDetectorService } from '../gcps-detector.service';
@@ -70,6 +71,32 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
     // Photos drawn with north up, to compare the same place seen from different sides
     public northUp: boolean = localStorage.getItem("northUp") === "1";
 
+    // Map reference: in front of the first photo, the place of the GCP on the base layer of the GCP map,
+    // at the ground scale the first photo is shown at (it follows the zoom of that photo)
+    public showReference: boolean = localStorage.getItem("mapReference") !== "0";
+    public referenceSize = { width: 320, height: 240 };
+    public referenceEmpty: boolean = false;
+    private referenceMap: L.Map = null;
+    private referenceTimer: any = null;
+
+    @ViewChild('referenceMap') set referenceMapElement(el: ElementRef) {
+        if (el && !this.referenceMap) {
+            this.zone.runOutsideAngular(() => {
+                this.referenceMap = L.map(el.nativeElement, {
+                    zoomControl: false, attributionControl: false, zoomSnap: 0, maxZoom: 99, zoomAnimation: false, fadeAnimation: false,
+                    dragging: false, scrollWheelZoom: false, doubleClickZoom: false, touchZoom: false, boxZoom: false, keyboard: false
+                }).setView([this.gcpCoords.y, this.gcpCoords.x], 20);
+                const layer = this.storage.mapBaseLayer ? this.storage.mapBaseLayer() : null;
+                if (layer) layer.addTo(this.referenceMap);
+                setTimeout(() => this.referenceEmpty = !layer, 0);
+            });
+            this.scheduleReference();
+        } else if (!el && this.referenceMap) {
+            this.referenceMap.remove();
+            this.referenceMap = null;
+        }
+    }
+
     // This page size is a "safe" number, we could use a bigger one but we risk to nuke the browser
     public pageSize: number = 10;
 
@@ -108,6 +135,11 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
     }
 
     ngOnDestroy(): void {
+        clearTimeout(this.referenceTimer);
+        if (this.referenceMap) {
+            this.referenceMap.remove();
+            this.referenceMap = null;
+        }
         if (this.handleDrop) window.removeEventListener("droppedFiles", this.handleDrop);
         window.removeEventListener("click", this.handleWindowClick);
         if (this.gridObserver) this.gridObserver.disconnect();
@@ -273,6 +305,42 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
         localStorage.setItem("crosshair", this.showCrosshair ? "1" : "0");
     }
 
+    public toggleReference(){
+        this.showReference = !this.showReference;
+        localStorage.setItem("mapReference", this.showReference ? "1" : "0");
+    }
+
+    // Called on every change of the view of a photo: the reference follows the first photo of the page
+    public scheduleReference(){
+        if (!this.showReference || this.referenceTimer) return;
+        this.referenceTimer = setTimeout(() => {
+            this.referenceTimer = null;
+            this.updateReference();
+        }, 50);
+    }
+
+    private async updateReference(){
+        if (!this.referenceMap) return;
+        const first = this.images[(this.page - 1) * this.pageSize];
+        const smart = first && this.smartImages ? this.smartImages.find(si => si.src === first.displayUrl) : null;
+        const info = smart ? smart.viewInfo() : null;
+        if (!info) return;
+
+        if (info.width !== this.referenceSize.width || info.height !== this.referenceSize.height) {
+            this.referenceSize = { width: info.width, height: info.height };
+            this.appRef.tick();
+            this.referenceMap.invalidateSize({ animate: false } as any);
+        }
+
+        // Meters of ground per screen pixel in the first photo -> zoom of the map with the same scale
+        const cam = await this.camera(first.image.imgName);
+        const ground = cam ? groundAffine(cam, this.exifPoint) : null;
+        if (!ground || !this.referenceMap) return;
+        const metersPerPixel = info.scale / Math.sqrt(Math.abs(ground.A[0] * ground.A[3] - ground.A[1] * ground.A[2]));
+        const zoom = Math.log2(156543.03392 * Math.cos(this.gcpCoords.y * Math.PI / 180) / metersPerPixel);
+        if (isFinite(zoom)) this.referenceMap.setView([this.gcpCoords.y, this.gcpCoords.x], zoom, { animate: false });
+    }
+
     public toggleNorthUp(){
         this.northUp = !this.northUp;
         localStorage.setItem("northUp", this.northUp ? "1" : "0");
@@ -344,6 +412,7 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
     }
 
     private loadVisibleImages() {
+        this.scheduleReference();
         const visible = this.images.slice((this.page - 1) * this.pageSize, this.page * this.pageSize);
 
         for (const desc of visible) {
@@ -482,10 +551,29 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
 
     public ok(): void {
 
+        // Suggestions that were not confirmed are not saved: say it before leaving
+        const pending = this.images.filter(item => item.isTagged && item.suggested).length;
+        if (pending === 0) {
+            this.save();
+            return;
+        }
+
+        const modalRef = this.modalService.open(ConfirmDialogComponent, { ariaLabelledBy: 'modal-basic-title' });
+        modalRef.componentInstance.title = "Unconfirmed suggestions";
+        modalRef.componentInstance.text = (pending === 1 ? "1 suggestion was not confirmed and will be discarded. " : pending + " suggestions were not confirmed and will be discarded. ") +
+            "To keep a suggestion, answer No, click its yellow title to confirm it (it turns green) and save again. Save and discard the unconfirmed ones?";
+        modalRef.result.then(result => {
+            if (result === 'yes') this.save();
+        }, () => {});
+    }
+
+    private save(): void {
+
         // Save in storage
         const tmp = this.storage.imageGcps.filter(img => img.gcpName !== this.gcp.name);
 
-        tmp.push(...this.images.filter(item => item.isTagged).map(itm => itm.image));
+        // Suggestions that were not confirmed (yellow) are not saved
+        tmp.push(...this.images.filter(item => item.isTagged && !item.suggested).map(itm => itm.image));
 
         this.storage.imageGcps = tmp;
 

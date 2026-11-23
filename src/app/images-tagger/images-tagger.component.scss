@@ -93,3 +93,33 @@ input {
 .badge.confirmable{
     cursor: pointer;
 }
+
+.map-reference{
+    position: relative;
+    display: inline-block;
+    vertical-align: top;
+    overflow: hidden;
+    background: #e9ecef;
+}
+
+.map-reference-pin{
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    margin: -16px 0 0 -16px;
+    z-index: 1000;
+    pointer-events: none;
+}
+
+.map-reference-empty{
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 8px;
+    z-index: 1000;
+}
+
+.badge.map-reference-title{
+    background-color: #000;
+    color: #fff;
+}
