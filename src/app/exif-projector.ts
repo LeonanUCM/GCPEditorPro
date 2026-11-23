@@ -17,7 +17,7 @@ const FULL_FRAME_DIAGONAL = 43.2666; // mm, 36 x 24
 // trust the height of the triangulated point
 const MIN_PARALLAX_COS = Math.cos(15 * Math.PI / 180);
 
-type Vec = [number, number, number];
+export type Vec = [number, number, number];
 
 export interface PhotoPose {
     lat: number;
@@ -174,6 +174,49 @@ export function project(cam: Camera, point: Vec, outside = 0): { x: number, y: n
         y: Math.min(Math.max(y, 1), cam.height - 1),
         offset: centerOffset(cam, x, y)
     };
+}
+
+/**
+ * Local map from the ground to the photo around a point: pixel of the point and
+ * A = d(pixel) / d(east, north) in pixels per meter, [dx/dE, dx/dN, dy/dE, dy/dN]. The ground is taken
+ * as horizontal at the height of the point. null when the point is behind the camera.
+ */
+export function groundAffine(cam: Camera, point: Vec): { x: number, y: number, A: number[] } {
+    const pixel = (p: Vec) => {
+        const v: Vec = [p[0] - cam.center[0], p[1] - cam.center[1], p[2] - cam.center[2]];
+        const z = dot(v, cam.forward);
+        return z <= 0.1 ? null : [cam.width / 2 + cam.focal * dot(v, cam.right) / z, cam.height / 2 + cam.focal * dot(v, cam.down) / z];
+    };
+    const p = pixel(point), e = pixel([point[0] + 0.5, point[1], point[2]]), n = pixel([point[0], point[1] + 0.5, point[2]]);
+    if (!p || !e || !n) return null;
+    return { x: p[0], y: p[1], A: [(e[0] - p[0]) * 2, (n[0] - p[0]) * 2, (e[1] - p[1]) * 2, (n[1] - p[1]) * 2] };
+}
+
+/**
+ * How to draw the photo with north up and east to the right, so photos taken from different sides can
+ * be compared: view = L * pixel, L = [l00, l01, l10, l11], same area as the photo. It is the ground map
+ * of `groundAffine` undone, so an oblique photo is also stretched back to the shape of the ground; a photo
+ * that looks too flat over the ground (stretch over 3x) is only turned.
+ * The map is taken at `point` if the photo sees it, otherwise at the place the photo looks at.
+ */
+export function northUp(cam: Camera, point: Vec): number[] {
+    let g = groundAffine(cam, point);
+    if (!g || g.x < -cam.width || g.x > 2 * cam.width || g.y < -cam.height || g.y > 2 * cam.height) {
+        const h = cam.center[2] - point[2];
+        const t = cam.forward[2] < -0.05 && h > 0 ? Math.min(-h / cam.forward[2], 10 * h) : 50;
+        g = groundAffine(cam, [cam.center[0] + t * cam.forward[0], cam.center[1] + t * cam.forward[1], cam.center[2] + t * cam.forward[2]]);
+    }
+    if (!g) return null;
+    const [a, b, c, d] = g.A, det = a * d - b * c;
+    if (!isFinite(det) || Math.abs(det) < 1e-9) return null;
+
+    const k = Math.sqrt(Math.abs(det)) / det;
+    const L = [k * d, -k * b, k * c, -k * a];
+    // The two stretches of L multiply to 1: s + 1/s = sqrt(sum of squares + 2)
+    if (Math.sqrt(L[0] * L[0] + L[1] * L[1] + L[2] * L[2] + L[3] * L[3] + 2) <= 3 + 1 / 3) return L;
+
+    const turn = -Math.PI / 2 - Math.atan2(d, b);
+    return [Math.cos(turn), -Math.sin(turn), Math.sin(turn), Math.cos(turn)];
 }
 
 /** Distance of a pixel from the center of the photo: 0 = center, 1 = corner. */

@@ -4,6 +4,9 @@ import { CoordsXY } from '../../shared/common';
 const MAX_SCALE = 300;
 const WHEEL_STEP = Math.exp(0.7 / 3);
 const DRAG_THRESHOLD = 3;
+// Zoom of an image that has a pin when it is first shown, centered on the pin
+const PIN_ZOOM = 10;
+const IDENTITY = [1, 0, 0, 1];
 
 @Component({
     selector: 'app-smartimage',
@@ -12,14 +15,17 @@ const DRAG_THRESHOLD = 3;
 })
 export class SmartimageComponent implements AfterViewInit, OnDestroy {
 
+    // A pin set from outside (loaded file, detection) moves the view to it; a click of the user does not
     @Input()
     get pinLocation() {
         return this.pinLocationValue;
     }
 
     set pinLocation(val) {
+        const moved = val !== this.pinLocationValue;
         this.pinLocationValue = val;
-        this.render();
+        if (val && moved) this.home();
+        else this.render();
         this.pinLocationChange.emit(this.pinLocationValue);
     }
 
@@ -49,8 +55,30 @@ export class SmartimageComponent implements AfterViewInit, OnDestroy {
     }
 
     sizeValue = 320;
+
+    // How the image is drawn: view = L * image pixel, L = [l00, l01, l10, l11] (null = as it is).
+    // Used to show the photo with north up. The center of the view stays on the same place of the image.
+    @Input()
+    get orient() {
+        return this.L;
+    }
+
+    set orient(val: number[]) {
+        const next = val || IDENTITY;
+        if (next.every((v, i) => Math.abs(v - this.L[i]) < 1e-6)) return;
+        const center = this.viewToImage({ x: this.view.x + this.view.w / 2, y: this.view.y + this.view.h / 2 });
+        this.L = next;
+        if (this.naturalWidth === 0) return;
+        const c = this.imageToView(center);
+        this.view.x = c.x - this.view.w / 2;
+        this.view.y = c.y - this.view.h / 2;
+        this.clampView();
+        this.render();
+    }
+
     @ViewChild('img') img: ElementRef;
     @ViewChild('svg') svg: ElementRef;
+    @ViewChild('content') content: ElementRef;
     @ViewChild('image') image: ElementRef;
     @ViewChild('pin') pinGroup: ElementRef;
     @ViewChild('cross') crossGroup: ElementRef;
@@ -61,10 +89,12 @@ export class SmartimageComponent implements AfterViewInit, OnDestroy {
 
     pinLocationValue: CoordsXY = null;
 
+    private L: number[] = IDENTITY;
     private naturalWidth = 0;
     private naturalHeight = 0;
     private displayWidth = 0;
     private displayHeight = 0;
+    // Visible rectangle, in view coordinates (= image pixels when the image is not turned)
     private view = { x: 0, y: 0, w: 0, h: 0 };
 
     private pointer: { id: number, x: number, y: number, panning: boolean } = null;
@@ -109,12 +139,14 @@ export class SmartimageComponent implements AfterViewInit, OnDestroy {
             svg.classList.remove('panning');
             if (p.panning || this.naturalWidth === 0) return;
 
-            const pos = this.toImage(e.clientX, e.clientY);
+            const pos = this.viewToImage(this.toView(e.clientX, e.clientY));
             pos.x = Math.min(Math.max(pos.x, 0), this.naturalWidth);
             pos.y = Math.min(Math.max(pos.y, 0), this.naturalHeight);
 
-            this.pinLocation = pos;
-            this.pin.emit(this.pinLocation);
+            this.pinLocationValue = pos;
+            this.render();
+            this.pinLocationChange.emit(pos);
+            this.pin.emit(pos);
         });
 
         this.listen('pointercancel', () => {
@@ -137,8 +169,9 @@ export class SmartimageComponent implements AfterViewInit, OnDestroy {
             if (delta === 0) return;
 
             const scale = this.naturalWidth / this.view.w;
-            const newScale = Math.min(MAX_SCALE, Math.max(1, delta < 0 ? scale * WHEEL_STEP : scale / WHEEL_STEP));
-            const p = this.toImage(e.clientX, e.clientY);
+            const minScale = this.naturalWidth / this.fitWidth();
+            const newScale = Math.min(MAX_SCALE, Math.max(minScale, delta < 0 ? scale * WHEEL_STEP : scale / WHEEL_STEP));
+            const p = this.toView(e.clientX, e.clientY);
             const ratio = scale / newScale;
 
             this.view.x = p.x - (p.x - this.view.x) * ratio;
@@ -177,6 +210,7 @@ export class SmartimageComponent implements AfterViewInit, OnDestroy {
         image.setAttribute('href', img.currentSrc || img.src);
 
         this.layout();
+        this.home();
     }
 
     private layout() {
@@ -195,6 +229,20 @@ export class SmartimageComponent implements AfterViewInit, OnDestroy {
         this.render();
     }
 
+    // Default position: PIN_ZOOM on the pin, or the whole image when there is no pin
+    private home() {
+        if (!this.svg || this.naturalWidth === 0 || this.displayWidth === 0) return;
+
+        const b = this.bounds();
+        const pin = this.pinLocationValue;
+        const c = pin ? this.imageToView(pin) : { x: (b.x0 + b.x1) / 2, y: (b.y0 + b.y1) / 2 };
+        const w = pin ? this.naturalWidth / PIN_ZOOM : this.fitWidth();
+        const h = w * this.displayHeight / this.displayWidth;
+        this.view = { x: c.x - w / 2, y: c.y - h / 2, w, h };
+        this.clampView();
+        this.render();
+    }
+
     public clearPin(){
         this.pinLocation = null;
     }
@@ -204,7 +252,7 @@ export class SmartimageComponent implements AfterViewInit, OnDestroy {
         this.listeners.push([type, fn]);
     }
 
-    private toImage(clientX: number, clientY: number): CoordsXY {
+    private toView(clientX: number, clientY: number): CoordsXY {
         const svg = this.svg.nativeElement;
         const pt = svg.createSVGPoint();
         pt.x = clientX;
@@ -213,22 +261,49 @@ export class SmartimageComponent implements AfterViewInit, OnDestroy {
         return { x: p.x, y: p.y };
     }
 
+    private imageToView(p: CoordsXY): CoordsXY {
+        const L = this.L;
+        return { x: L[0] * p.x + L[1] * p.y, y: L[2] * p.x + L[3] * p.y };
+    }
+
+    private viewToImage(p: CoordsXY): CoordsXY {
+        const L = this.L, det = L[0] * L[3] - L[1] * L[2];
+        return { x: (L[3] * p.x - L[1] * p.y) / det, y: (L[0] * p.y - L[2] * p.x) / det };
+    }
+
+    // Box of the image in view coordinates
+    private bounds() {
+        const pts = [[0, 0], [this.naturalWidth, 0], [0, this.naturalHeight], [this.naturalWidth, this.naturalHeight]]
+            .map(([x, y]) => this.imageToView({ x, y }));
+        const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+        return { x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys) };
+    }
+
+    // Width of the view that shows the whole image
+    private fitWidth(): number {
+        const b = this.bounds();
+        return Math.max(b.x1 - b.x0, (b.y1 - b.y0) * this.displayWidth / this.displayHeight);
+    }
+
     private clampView() {
-        this.view.x = Math.min(Math.max(this.view.x, -this.view.w / 2), this.naturalWidth - this.view.w / 2);
-        this.view.y = Math.min(Math.max(this.view.y, -this.view.h / 2), this.naturalHeight - this.view.h / 2);
+        const b = this.bounds();
+        this.view.x = Math.min(Math.max(this.view.x, b.x0 - this.view.w / 2), b.x1 - this.view.w / 2);
+        this.view.y = Math.min(Math.max(this.view.y, b.y0 - this.view.h / 2), b.y1 - this.view.h / 2);
     }
 
     private render() {
         if (!this.svg || this.naturalWidth === 0) return;
 
-        const v = this.view;
+        const v = this.view, L = this.L;
         this.svg.nativeElement.setAttribute('viewBox', `${v.x} ${v.y} ${v.w} ${v.h}`);
+        this.content.nativeElement.setAttribute('transform', `matrix(${L[0]} ${L[2]} ${L[1]} ${L[3]} 0 0)`);
         this.image.nativeElement.style.imageRendering = this.displayWidth * window.devicePixelRatio / v.w >= 1 ? 'pixelated' : 'auto';
 
         const g = this.pinGroup.nativeElement;
         if (this.pinLocationValue) {
             const s = v.w / this.displayWidth;
-            g.setAttribute('transform', `translate(${this.pinLocationValue.x} ${this.pinLocationValue.y}) scale(${s})`);
+            const p = this.imageToView(this.pinLocationValue);
+            g.setAttribute('transform', `translate(${p.x} ${p.y}) scale(${s})`);
             g.style.display = '';
         } else {
             g.style.display = 'none';
@@ -247,7 +322,7 @@ export class SmartimageComponent implements AfterViewInit, OnDestroy {
         }
 
         const v = this.view;
-        const p = this.toImage(this.hover.x, this.hover.y);
+        const p = this.toView(this.hover.x, this.hover.y);
         const d = `M${p.x} ${v.y}V${v.y + v.h}M${v.x} ${p.y}H${v.x + v.w}`;
         for (const path of g.children) path.setAttribute('d', d);
         g.style.display = '';

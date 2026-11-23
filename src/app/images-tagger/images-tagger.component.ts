@@ -12,10 +12,13 @@ import { GcpsDetectorService } from '../gcps-detector.service';
 import { CoordsXY, CoordsXYZ, GPSCoords } from '../../shared/common';
 import { getDistanceFromLatLonInM, toHumanDistance } from 'src/shared/utils';
 import { SmartimageComponent } from '../smartimage/smartimage.component';
-import { Camera, readPhotoPose, cameraFromPose, project, locatePoint, viewDistance, centerOffset } from '../exif-projector';
+import { Camera, Vec, readPhotoPose, cameraFromPose, project, locatePoint, viewDistance, centerOffset, groundAffine, northUp } from '../exif-projector';
 
 // How far outside the frame a projected point is still suggested, as a fraction of the longer side
 const EXIF_OUTSIDE = 0.04;
+// Visual fine adjustment: a match under this normalized correlation is not used (the tag stays where
+// the pose puts it)
+const VISUAL_MIN_SCORE = 0.6;
 
 const clone = rfdc();
 
@@ -56,6 +59,16 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
     // "Detect GCPs based on GPS/EXIF": camera of each photo (null = no pose in the file) and last result
     private exifCameras: { [imgName: string]: Camera } = {};
     public exifResult: string = null;
+    // Where the GCP is in the local frame of the cameras (the map coordinate until a detection locates it)
+    private exifPoint: Vec = [0, 0, 0];
+
+    // Options of the dialog of "Detect GCPs based on GPS/EXIF"
+    @ViewChild('exifDialog') exifDialog: TemplateRef<any>;
+    public exifMax: number = parseInt(localStorage.getItem("exifMax")) >= 0 ? parseInt(localStorage.getItem("exifMax")) : 20;
+    public exifVisual: boolean = localStorage.getItem("exifVisual") === "1";
+
+    // Photos drawn with north up, to compare the same place seen from different sides
+    public northUp: boolean = localStorage.getItem("northUp") === "1";
 
     // This page size is a "safe" number, we could use a bigger one but we risk to nuke the browser
     public pageSize: number = 10;
@@ -260,6 +273,32 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
         localStorage.setItem("crosshair", this.showCrosshair ? "1" : "0");
     }
 
+    public toggleNorthUp(){
+        this.northUp = !this.northUp;
+        localStorage.setItem("northUp", this.northUp ? "1" : "0");
+        this.loadVisibleImages();
+    }
+
+    // Camera of a photo from the pose the drone wrote in it (null = no pose in the file)
+    private async camera(name: string): Promise<Camera> {
+        if (this.exifCameras[name] === undefined) {
+            const info = this.storage.images.find(item => item.name === name);
+            const pose = info && info.file ? await readPhotoPose(info.file, info.url) : null;
+            this.exifCameras[name] = pose ? cameraFromPose(pose, this.gcpCoords.y, this.gcpCoords.x) : null;
+        }
+        return this.exifCameras[name];
+    }
+
+    public openExifDialog(){
+        this.modalService.open(this.exifDialog, { ariaLabelledBy: 'exif-dialog-title' }).result.then(result => {
+            if (result !== 'detect') return;
+            this.exifMax = Math.max(0, Math.floor(this.exifMax) || 0);
+            localStorage.setItem("exifMax", this.exifMax.toString());
+            localStorage.setItem("exifVisual", this.exifVisual ? "1" : "0");
+            this.detectByExif();
+        }, () => {});
+    }
+
     public toggleColumnsSettings(){
         this.showColumnsSettings = !this.showColumnsSettings;
     }
@@ -309,6 +348,10 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
 
         for (const desc of visible) {
             if (desc.imageUrl === null) continue;
+
+            if (this.northUp) {
+                this.camera(desc.image.imgName).then(cam => desc.north = cam ? northUp(cam, this.exifPoint) : null);
+            }
 
             if (!this.storage.hasDisplayUrl(desc.image.imgName)) {
                 desc.displayUrl = desc.displayUrlRaw = desc.displayError = null;
@@ -629,9 +672,7 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
             }
             if (i % 10 === 0) this.setProgress("Reading the pose of the photos (" + (i + 1) + "/" + all.length + ")", i / all.length, false, true);
 
-            const info = this.storage.images.find(item => item.name === name);
-            const pose = info && info.file ? await readPhotoPose(info.file, info.url) : null;
-            this.exifCameras[name] = pose ? cameraFromPose(pose, this.gcpCoords.y, this.gcpCoords.x) : null;
+            await this.camera(name);
         }
 
         // Distance of each image = from the GCP to the place the photo looks at, not to the drone: an
@@ -647,11 +688,16 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
         const byHand = all.filter(item => item.isTagged && !item.suggested && this.exifCameras[item.image.imgName]);
         const located = locatePoint(byHand.map(item => ({ cam: this.exifCameras[item.image.imgName], x: item.image.imX, y: item.image.imY })));
 
+        this.exifPoint = located.point;
+
         let suggested = 0, notVisible = 0, noPose = 0;
 
         let onBorder = 0;
 
         for (const item of all) item.centerOffset = null;
+
+        // Images that see the point
+        let candidates: { item: ImageDescriptor, cam: Camera, where: { x: number, y: number, offset: number } }[] = [];
 
         for (const item of images) {
             const cam = this.exifCameras[item.image.imgName];
@@ -668,14 +714,75 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
             // A point up to 4 % of the photo side outside the frame is kept, on the border
             const where = project(cam, located.point, EXIF_OUTSIDE * Math.max(cam.width, cam.height));
             if (where) {
-                this.pin({ x: where.x, y: where.y }, item);
-                item.suggested = true;
-                item.centerOffset = where.offset;
-                suggested++;
-                if (where.offset > centerOffset(cam, where.x, where.y) + 1e-9) onBorder++;
+                candidates.push({ item, cam, where });
             } else {
                 if (item.suggested) this.unpin(item);
                 notVisible++;
+            }
+        }
+
+        // The limit keeps the images where the point falls closer to the center of the photo
+        candidates.sort((a, b) => a.where.offset - b.where.offset);
+        const overLimit = this.exifMax > 0 ? candidates.splice(this.exifMax) : [];
+        for (const { item, where } of overLimit) {
+            if (item.suggested) this.unpin(item);
+            item.centerOffset = where.offset;
+        }
+        for (const { item, cam, where } of candidates) {
+            this.pin({ x: where.x, y: where.y }, item);
+            item.suggested = true;
+            item.centerOffset = where.offset;
+            suggested++;
+            if (where.offset > centerOffset(cam, where.x, where.y) + 1e-9) onBorder++;
+        }
+
+        // Visual fine adjustment: the ground around a good tag is searched around each suggestion.
+        // The good tag is the most vertical photo tagged by hand; with no photo tagged by hand, the
+        // suggestion closest to the center of its photo, and then all the tags fall on the same detail of
+        // the ground, the one under that suggestion.
+        let visual = '';
+        if (this.exifVisual && candidates.length > 0) {
+            const hand = byHand.slice().sort((a, b) => this.exifCameras[a.image.imgName].forward[2] - this.exifCameras[b.image.imgName].forward[2])[0];
+            const refItem = hand || candidates[0].item;
+            const refMap = groundAffine(this.exifCameras[refItem.image.imgName], located.point);
+            const targets = hand ? candidates : candidates.slice(1);
+            let adjusted = 0, interrupted = false;
+            const shifts: number[] = [];
+
+            try {
+                if (!refMap) throw new Error('the reference photo does not see the point');
+                const ref = await this.detector.visualReference(refItem.image.imgName, refItem.image.imX, refItem.image.imY, refMap.A);
+                try {
+                    for (let i = 0; i < targets.length; i++) {
+                        if (this.requestedInterrupt) {
+                            this.requestedInterrupt = false;
+                            interrupted = true;
+                            break;
+                        }
+                        const { item, cam } = targets[i];
+                        this.setProgress("Visual fine adjustment of " + item.image.imgName + " (" + (i + 1) + "/" + targets.length + ")", i / targets.length, false, true);
+
+                        const map = groundAffine(cam, located.point);
+                        const match = map ? await this.detector.visualMatch(ref, item.image.imgName, item.image.imX, item.image.imY, map.A) : null;
+                        if (match && match.score >= VISUAL_MIN_SCORE && match.x >= 0 && match.y >= 0 && match.x <= cam.width && match.y <= cam.height) {
+                            shifts.push(Math.hypot(match.x - item.image.imX, match.y - item.image.imY));
+                            this.pin({ x: match.x, y: match.y }, item);
+                            item.suggested = true;
+                            adjusted++;
+                        }
+                    }
+                } finally {
+                    ref.delete();
+                }
+                shifts.sort((a, b) => a - b);
+                visual = ` Visual fine adjustment against ${refItem.image.imgName} (${hand ? 'tagged by hand' : 'the most centered suggestion: no image is tagged by hand'}): ` +
+                    `${adjusted} of ${targets.length} suggestions moved` +
+                    (adjusted > 0 ? ` (median ${Math.round(shifts[Math.floor(shifts.length / 2)])} px)` : '') +
+                    `, ${targets.length - adjusted} left where the pose puts them (no clear match)` +
+                    (interrupted ? ', interrupted' : '') + '. Check every tag: a match can sit on a shadow or a similar detail.';
+            } catch (e) {
+                console.warn(e);
+                visual = ' Visual fine adjustment failed: ' + (e && e.message ? e.message : e) + '.';
             }
         }
 
@@ -690,7 +797,8 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
                       located.from === 'one' ? `, using the image tagged by hand to locate the point` : '';
         let result = `${searched}${basis}: ${suggested} suggested (yellow, adjust each one; ordered from the center of the photo to the border), ${notVisible} do not see the point` +
             (onBorder > 0 ? `, ${onBorder} of the suggested are on the border of the photo: the point may be just outside (remove the tag if it is)` : '') +
-            (noPose > 0 ? `, ${noPose} without GPS/gimbal data` : '') + '.';
+            (overLimit.length > 0 ? `, ${overLimit.length} more see the point but are over the limit of ${this.exifMax} suggestions` : '') +
+            (noPose > 0 ? `, ${noPose} without GPS/gimbal data` : '') + '.' + visual;
         if (suggested === 0) {
             result += this.filterByDistance ?
                 ' No photo of this place among them: load the photos of this area with the file box above (opening a GCP file loads only the photos it lists), or raise the distance filter.' :
@@ -746,5 +854,7 @@ class ImageDescriptor {
     public suggested?: boolean;
     // Where the GCP falls in the photo: 0 = center, 1 = corner (null = not known)
     public centerOffset?: number;
+    // How to draw the photo with north up (see northUp in exif-projector.ts)
+    public north?: number[];
 }
 

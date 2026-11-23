@@ -1,7 +1,7 @@
 <div class="smart-image">
     <img [src]="src" #img class="source" (load)="onImageLoad()">
     <svg #svg xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
-        <image #image x="0" y="0"></image>
+        <g #content><image #image x="0" y="0"></image></g>
         <g #cross style="display: none" pointer-events="none" fill="none">
             <path stroke="#000" stroke-opacity="0.6" stroke-width="3" vector-effect="non-scaling-stroke"></path>
             <path stroke="#fff" stroke-width="1" vector-effect="non-scaling-stroke"></path>
