@@ -98,7 +98,12 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
     }
 
     // This page size is a "safe" number, we could use a bigger one but we risk to nuke the browser
-    public pageSize: number = 10;
+    private readonly pageCells: number = 10;
+
+    // Photos per page: the map reference takes one of the cells, so the rows stay full
+    public get pageSize(): number {
+        return this.pageCells - (this.showReference ? 1 : 0);
+    }
 
     @ViewChild('dnd') dnd: ElementRef;
     private handleDrop = null;
@@ -308,6 +313,9 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
     public toggleReference(){
         this.showReference = !this.showReference;
         localStorage.setItem("mapReference", this.showReference ? "1" : "0");
+        // The number of photos per page changed
+        this.page = Math.max(1, Math.min(this.page, Math.ceil(this.images.length / this.pageSize)));
+        this.loadVisibleImages();
     }
 
     // Called on every change of the view of a photo: the reference follows the first photo of the page
