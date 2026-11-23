@@ -70,7 +70,7 @@
 <div class="row mt-2">
     <div class="col" #grid *ngIf="images !== null">
         <div *ngFor="let desc of images | slice: (page-1) * pageSize : page * pageSize" class="align-top d-inline-block text-center border" [style.width.%]="100 / columns">
-            <span class="badge d-block rounded-0" [ngClass]="getClass(desc)">
+            <span class="badge d-block rounded-0" [ngClass]="getClass(desc)" [class.confirmable]="desc.isTagged && desc.suggested" [title]="desc.isTagged && desc.suggested ? 'Click to confirm this suggestion where it is' : ''" (click)="confirm(desc)">
                 <h5 class="m-1 title">{{getName(desc)}}
                     <fa-layers [fixedWidth]="true" class="ml-3" *ngIf="filterByDistance && desc.distance == null" title="This image has no EXIF location data">
                         <fa-icon [styles]="{'color': '#2c3e50'}" icon="map-marker-alt"></fa-icon>  
@@ -78,10 +78,10 @@
                     </fa-layers>
                 </h5>
                 
-                <button [title]="(desc.isTagged && desc.otherGcps.length > 0) ? 'Untag GCP' : 'Remove Image'" type="button" class="close" aria-label="Close" (click)="remove(desc)">
+                <button [title]="(desc.isTagged && desc.otherGcps.length > 0) ? 'Untag GCP' : 'Remove Image'" type="button" class="close" aria-label="Close" (click)="$event.stopPropagation(); remove(desc)">
                     <span aria-hidden="true">&times;</span>
                 </button>
-                <a class="find" (click)="detect(desc)" title="Detect GCP">
+                <a class="find" (click)="$event.stopPropagation(); detect(desc)" title="Detect GCP">
                     <div class="d-flex align-items-center h-100">
                         <fa-icon icon="search"></fa-icon>
                     </div>

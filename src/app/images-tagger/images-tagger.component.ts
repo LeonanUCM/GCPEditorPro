@@ -506,6 +506,12 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
         desc.pinLocation = location;
     }
 
+    // A click on the title of a suggested image accepts the tag where it is, as if tagged by hand:
+    // a click on the photo to accept it would move the tag
+    public confirm(desc: ImageDescriptor): void {
+        if (desc.isTagged && desc.suggested) desc.suggested = false;
+    }
+
     public unpin(desc: ImageDescriptor): void{
         desc.isTagged = false;
         desc.suggested = false;
