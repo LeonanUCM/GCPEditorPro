@@ -57,13 +57,13 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
 
     public page: number = 1;
 
-    // "Detect GCPs based on GPS/EXIF": camera of each photo (null = no pose in the file) and last result
+    // "Estimate from GPS/EXIF": camera of each photo (null = no pose in the file) and last result
     private exifCameras: { [imgName: string]: Camera } = {};
     public exifResult: string = null;
     // Where the GCP is in the local frame of the cameras (the map coordinate until a detection locates it)
     private exifPoint: Vec = [0, 0, 0];
 
-    // Options of the dialog of "Detect GCPs based on GPS/EXIF"
+    // Options of the dialog of "Estimate from GPS/EXIF"
     @ViewChild('exifDialog') exifDialog: TemplateRef<any>;
     public exifMax: number = parseInt(localStorage.getItem("exifMax") || "20", 10);
     public exifVisual: boolean = localStorage.getItem("exifVisual") === "1";
@@ -393,7 +393,7 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
         this.page = 1;
 
         // Tagged first. Inside each group: the images where the point falls closer to the center of
-        // the photo first (known after "Detect GCPs based on GPS/EXIF"), then by distance, then by name
+        // the photo first (known after "Estimate from GPS/EXIF"), then by distance, then by name
         const order = (a: ImageDescriptor, b: ImageDescriptor) => {
             if (a.isTagged !== b.isTagged) return a.isTagged ? -1 : 1;
             const ca = a.centerOffset != null;
@@ -570,9 +570,9 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
         }
 
         const modalRef = this.modalService.open(ConfirmDialogComponent, { ariaLabelledBy: 'modal-basic-title' });
-        modalRef.componentInstance.title = "Unconfirmed suggestions";
-        modalRef.componentInstance.text = (pending === 1 ? "1 suggestion was not confirmed and will be discarded. " : pending + " suggestions were not confirmed and will be discarded. ") +
-            "To keep a suggestion, answer No, click its yellow title to confirm it (it turns green) and save again. Save and discard the unconfirmed ones?";
+        modalRef.componentInstance.title = "Unconfirmed estimates";
+        modalRef.componentInstance.text = (pending === 1 ? "1 estimate is not confirmed and will be discarded. " : pending + " estimates are not confirmed and will be discarded. ") +
+            "To keep one, answer No, click its yellow title (it turns green) and save again. Save and discard them?";
         modalRef.result.then(result => {
             if (result === 'yes') this.save();
         }, () => {});
@@ -681,7 +681,7 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
         if (desc.distance && this.filterByDistance)
             name = name + ' (' + toHumanDistance(desc.distance) + ')';
 
-        if (desc.isTagged && desc.suggested) name = name + ' - suggested';
+        if (desc.isTagged && desc.suggested) name = name + ' - estimated';
 
         return name;
     }
@@ -761,7 +761,7 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
     public async detectByExif() {
 
         this.exifResult = null;
-        this.setProgress("Reading the pose of the photos", 0, false, true);
+        this.setProgress("Reading the GPS/EXIF pose of the photos", 0, false, true);
 
         // The pose of every loaded image: the distance filter needs it before choosing the images
         const all = this.rawImages.slice();
@@ -776,7 +776,7 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
                 return;
             }
             if (i % 10 === 0) {
-                this.setProgress("Reading the pose of the photos (" + (i + 1) + "/" + all.length + ")", i / all.length, false, true);
+                this.setProgress("Reading the GPS/EXIF pose of the photos (" + (i + 1) + "/" + all.length + ")", i / all.length, false, true);
             }
 
             await this.camera(name);
@@ -852,18 +852,18 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
 
         // What was searched: the button only looks at the images that pass the distance filter
         const searched = this.filterByDistance ?
-            `Searched the ${images.length} images that look within ${this.filterDistance} m of "${this.gcp.name}", of ${this.rawImages.length} loaded` :
-            `Searched the ${images.length} loaded images`;
-        const basis = located.from === 'rays' ? `, using the ${byHand.length} images tagged by hand to locate the point` :
-                      located.from === 'one' ? `, using the image tagged by hand to locate the point` : '';
-        let result = `${searched}${basis}: ${suggested} suggested (yellow, adjust each one; ordered from the center of the photo to the border), ${notVisible} do not see the point` +
-            (onBorder > 0 ? `, ${onBorder} of the suggested are on the border of the photo: the point may be just outside (remove the tag if it is)` : '') +
-            (overLimit.length > 0 ? `, ${overLimit.length} more see the point but are over the limit of ${this.exifMax} suggestions` : '') +
-            (noPose > 0 ? `, ${noPose} without GPS/gimbal data` : '') + '.' + visual;
+            `Searched ${images.length} images within ${this.filterDistance} m of "${this.gcp.name}" (of ${this.rawImages.length} loaded)` :
+            `Searched ${images.length} loaded images`;
+        const basis = located.from === 'rays' ? `, point located from ${byHand.length} images tagged by hand` :
+                      located.from === 'one' ? `, point located from the image tagged by hand` : '';
+        let result = `${searched}${basis}: ${suggested} estimated (yellow: check and confirm each one; sorted from photo center to border), ${notVisible} do not see the point` +
+            (onBorder > 0 ? `, ${onBorder} on the photo border (the point may be just outside: untag them if so)` : '') +
+            (overLimit.length > 0 ? `, ${overLimit.length} over the limit of ${this.exifMax}` : '') +
+            (noPose > 0 ? `, ${noPose} without GPS/EXIF pose` : '') + '.' + visual;
         if (suggested === 0) {
             result += this.filterByDistance ?
-                ' No photo of this place among them: load the photos of this area with the file box above (opening a GCP file loads only the photos it lists), or raise the distance filter.' :
-                ' No photo of this place among them: load the photos of this area with the file box above.';
+                ' No image of this place: load the photos of this area above (a GCP file loads only the photos it lists), or raise the distance filter.' :
+                ' No image of this place: load the photos of this area above.';
         }
         this.exifResult = result;
 
@@ -899,7 +899,7 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
                     const { item, cam } = targets[i];
                     const name = item.image.imgName;
                     const counter = " (" + (i + 1) + "/" + targets.length + ")";
-                    this.setProgress("Visual fine adjustment of " + name + counter, i / targets.length, false, true);
+                    this.setProgress("Refining " + name + counter, i / targets.length, false, true);
 
                     const map = groundAffine(cam, point);
                     const match = map ? await this.detector.visualMatch(ref, name, item.image.imX, item.image.imY, map.A) : null;
@@ -915,16 +915,16 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
             }
         } catch (e) {
             console.warn(e);
-            return ' Visual fine adjustment failed: ' + (e && e.message ? e.message : e) + '.';
+            return ' Visual refinement failed: ' + (e && e.message ? e.message : e) + '.';
         }
 
         shifts.sort((a, b) => a - b);
-        const against = hand ? 'tagged by hand' : 'the most centered suggestion: no image is tagged by hand';
-        return ` Visual fine adjustment against ${refItem.image.imgName} (${against}): ` +
-            `${shifts.length} of ${targets.length} suggestions moved` +
+        const against = hand ? 'tagged by hand' : 'the most centered estimate; none tagged by hand';
+        return ` Visual refinement against ${refItem.image.imgName} (${against}): ` +
+            `${shifts.length} of ${targets.length} moved` +
             (shifts.length > 0 ? ` (median ${Math.round(shifts[Math.floor(shifts.length / 2)])} px)` : '') +
-            `, ${targets.length - shifts.length} left where the pose puts them (no clear match)` +
-            (interrupted ? ', interrupted' : '') + '. Check every tag: a match can sit on a shadow or a similar detail.';
+            `, ${targets.length - shifts.length} kept (no clear match)` +
+            (interrupted ? ', interrupted' : '') + '. Check every tag: a match can land on a shadow or a similar detail.';
     }
 
     public requestedInterrupt: boolean = false;
@@ -958,7 +958,7 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
 
 }
 
-// An image that sees the point in "Detect GCPs based on GPS/EXIF", and where the point falls in it
+// An image that sees the point in "Estimate from GPS/EXIF", and where the point falls in it
 interface ExifCandidate {
     item: ImageDescriptor;
     cam: Camera;

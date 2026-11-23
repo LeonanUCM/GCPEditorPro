@@ -34,12 +34,12 @@
         </button>
     </div>
     <div class="col-md-auto">
-        <button id="northUp" title="North up: draw every photo with north up and east to the right, from the GPS position and gimbal angles written in it, to compare the same place seen from different sides" class="btn" [ngClass]="{'btn-primary': northUp, 'btn-light': !northUp}" type="button" (click)="toggleNorthUp()">
+        <button id="northUp" title="North up: turn every photo so that north is up, from its GPS/EXIF pose, to compare the same place seen from different sides" class="btn" [ngClass]="{'btn-primary': northUp, 'btn-light': !northUp}" type="button" (click)="toggleNorthUp()">
             <fa-icon icon="compass" [transform]="northUp ? 'rotate--45' : null"></fa-icon>
         </button>
     </div>
     <div class="col-md-auto">
-        <button id="mapReference" title="Map reference: show in front of the first photo the place where the GCP was put on the map, with the base map in use there, at the same scale as the first photo" class="btn" [ngClass]="{'btn-primary': showReference, 'btn-light': !showReference}" type="button" (click)="toggleReference()">
+        <button id="mapReference" title="Map reference: show the GCP on the base map before the first photo, at the same scale" class="btn" [ngClass]="{'btn-primary': showReference, 'btn-light': !showReference}" type="button" (click)="toggleReference()">
             <fa-icon icon="map"></fa-icon>
         </button>
     </div>
@@ -62,9 +62,9 @@
         </button>
     </div>
     <div class="col-md-auto">
-        <button id="detectExif" title="Suggest the place of the GCP in the images that pass the distance filter, from the GPS position and gimbal angles written in each photo. Images tagged by hand are kept and improve the suggestion." [disabled]="images === null || images.length === 0 ? true : null" class="btn btn-info" type="button" (click)="openExifDialog()">
+        <button id="detectExif" title="Estimate where the GCP falls in each image within the distance filter, from the camera position and angles stored in the photo (GPS/EXIF). Images tagged by hand are kept and make the estimate more accurate (experimental)" [disabled]="images === null || images.length === 0 ? true : null" class="btn btn-info" type="button" (click)="openExifDialog()">
             <fa-icon icon="search-location" class="mr-2"></fa-icon>
-            Detect GCPs based on GPS/EXIF
+            Estimate from GPS/EXIF
         </button>
     </div>
 </div>
@@ -88,7 +88,7 @@
             </div>
         </div>
         <div *ngFor="let desc of images | slice: (page-1) * pageSize : page * pageSize" class="align-top d-inline-block text-center border" [style.width.%]="100 / columns">
-            <span class="badge d-block rounded-0" [ngClass]="getClass(desc)" [class.confirmable]="desc.isTagged && desc.suggested" [title]="desc.isTagged && desc.suggested ? 'Click to confirm this suggestion where it is' : ''" (click)="confirm(desc)">
+            <span class="badge d-block rounded-0" [ngClass]="getClass(desc)" [class.confirmable]="desc.isTagged && desc.suggested" [title]="desc.isTagged && desc.suggested ? 'Click to confirm this estimate' : ''" (click)="confirm(desc)">
                 <h5 class="m-1 title">{{getName(desc)}}
                     <fa-layers [fixedWidth]="true" class="ml-3" *ngIf="filterByDistance && desc.distance == null" title="This image has no EXIF location data">
                         <fa-icon [styles]="{'color': '#2c3e50'}" icon="map-marker-alt"></fa-icon>  
@@ -129,25 +129,25 @@
 </div>
 <ng-template #exifDialog let-modal>
     <div class="modal-header">
-        <h4 class="modal-title" id="exif-dialog-title">Detect GCPs based on GPS/EXIF</h4>
+        <h4 class="modal-title" id="exif-dialog-title">Estimate from GPS/EXIF</h4>
         <button type="button" class="close" aria-label="Close" (click)="modal.dismiss()"><span aria-hidden="true">&times;</span></button>
     </div>
     <div class="modal-body">
         <div class="form-group">
-            <label for="exifMax">Maximum number of suggested images</label>
+            <label for="exifMax">Maximum number of images to estimate</label>
             <input type="number" class="form-control" id="exifMax" [(ngModel)]="exifMax" min="0" step="1">
-            <small class="form-text text-muted">The images where the point falls closer to the center of the photo are kept. 0 = no limit. Images tagged by hand do not count.</small>
+            <small class="form-text text-muted">Keeps the images where the GCP falls closest to the photo center. 0 = no limit. Images tagged by hand are not counted.</small>
         </div>
         <div class="custom-control custom-checkbox">
             <input type="checkbox" class="custom-control-input" id="exifVisual" [(ngModel)]="exifVisual">
-            <label class="custom-control-label" for="exifVisual">Automatic visual fine adjustment</label>
-            <small class="form-text text-muted">Moves each suggestion to the place that looks like the ground around a tag made by hand (with no tag made by hand, around the most centered suggestion).</small>
+            <label class="custom-control-label" for="exifVisual">Refine the estimates visually</label>
+            <small class="form-text text-muted">Moves each estimate to the spot that best matches the ground around a tag made by hand (with none, around the most centered estimate).</small>
         </div>
     </div>
     <div class="modal-footer">
         <button type="button" class="btn btn-light" (click)="modal.dismiss()">Cancel</button>
         <button type="button" class="btn btn-primary" id="exifDetect" (click)="modal.close('detect')">
-            <fa-icon icon="search-location" class="mr-2"></fa-icon>Detect
+            <fa-icon icon="search-location" class="mr-2"></fa-icon>Estimate
         </button>
     </div>
 </ng-template>
