@@ -8,6 +8,23 @@
     bottom: 14px;
 }
 
+// The list and the map fill the height the window leaves free (the page has 1rem of padding above and
+// 5rem below, for the bar with the buttons); a long list scrolls inside its card, not the page
+.gcps-row{
+    height: calc(100vh - 6rem);
+    min-height: 400px;
+}
+
+.gcps-card{
+    max-height: 100%;
+}
+
+.gcps-list{
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+}
+
 .list-group-item {
     cursor: pointer;
     user-select: none;
