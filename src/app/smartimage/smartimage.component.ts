@@ -276,7 +276,8 @@ export class SmartimageComponent implements AfterViewInit, OnDestroy {
     }
 
     private viewToImage(p: CoordsXY): CoordsXY {
-        const L = this.L, det = L[0] * L[3] - L[1] * L[2];
+        const L = this.L;
+        const det = L[0] * L[3] - L[1] * L[2];
         return { x: (L[3] * p.x - L[1] * p.y) / det, y: (L[0] * p.y - L[2] * p.x) / det };
     }
 
@@ -284,7 +285,8 @@ export class SmartimageComponent implements AfterViewInit, OnDestroy {
     private bounds() {
         const pts = [[0, 0], [this.naturalWidth, 0], [0, this.naturalHeight], [this.naturalWidth, this.naturalHeight]]
             .map(([x, y]) => this.imageToView({ x, y }));
-        const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+        const xs = pts.map(p => p.x);
+        const ys = pts.map(p => p.y);
         return { x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys) };
     }
 
@@ -303,7 +305,8 @@ export class SmartimageComponent implements AfterViewInit, OnDestroy {
     private render() {
         if (!this.svg || this.naturalWidth === 0) return;
 
-        const v = this.view, L = this.L;
+        const v = this.view;
+        const L = this.L;
         this.svg.nativeElement.setAttribute('viewBox', `${v.x} ${v.y} ${v.w} ${v.h}`);
         this.content.nativeElement.setAttribute('transform', `matrix(${L[0]} ${L[2]} ${L[1]} ${L[3]} 0 0)`);
         this.image.nativeElement.style.imageRendering = this.displayWidth * window.devicePixelRatio / v.w >= 1 ? 'pixelated' : 'auto';

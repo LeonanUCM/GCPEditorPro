@@ -179,7 +179,8 @@ export class GcpsMapComponent implements OnInit {
                 moveBtn.addEventListener("click", () => {
                     markerLayer.closePopup();
                     markerLayer.dragging.enable();
-                    markerLayer.bindTooltip("Drag the marker to the new place", { permanent: true, direction: 'top', offset: [0, -41] }).openTooltip();
+                    const tooltip = { permanent: true, direction: 'top' as L.Direction, offset: L.point(0, -41) };
+                    markerLayer.bindTooltip("Drag the marker to the new place", tooltip).openTooltip();
                     markerLayer.once('dragend', () => {
                         const { lat, lng } = markerLayer.getLatLng();
                         const [x, y] = proj4(this.storage.projection.eq, [lng, lat]);

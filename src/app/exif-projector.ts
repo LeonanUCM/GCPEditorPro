@@ -63,7 +63,8 @@ async function jpegSize(file: File): Promise<{ w: number, h: number }> {
             if (marker === 0xFF) { p++; continue; }
             // SOF0-SOF15, except DHT (C4), JPG (C8) and DAC (CC)
             if (marker >= 0xC0 && marker <= 0xCF && marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC) {
-                const h = d.getUint16(p + 5), w = d.getUint16(p + 7);
+                const h = d.getUint16(p + 5);
+                const w = d.getUint16(p + 7);
                 return w > 0 && h > 0 ? { w, h } : null;
             }
             if (marker === 0xDA) return null;
@@ -76,7 +77,8 @@ async function jpegSize(file: File): Promise<{ w: number, h: number }> {
 // Pixel size of the file (the EXIF may still carry the size of the original after a resize)
 async function imageSize(file: File, url: string, tags: any): Promise<{ w: number, h: number }> {
     const fromTags = () => {
-        const w = num(tags.ImageWidth) || num(tags.ExifImageWidth), h = num(tags.ImageHeight) || num(tags.ExifImageHeight);
+        const w = num(tags.ImageWidth) || num(tags.ExifImageWidth);
+        const h = num(tags.ImageHeight) || num(tags.ExifImageHeight);
         return w > 0 && h > 0 ? { w, h } : null;
     };
     if (/\.tiff?$/i.test(file.name) || !url) return fromTags();
@@ -131,7 +133,9 @@ export function cameraFromPose(pose: PhotoPose, lat0: number, lng0: number): Cam
         pose.height
     ];
 
-    const y = pose.yaw * rad, p = pose.pitch * rad, r = pose.roll * rad;
+    const y = pose.yaw * rad;
+    const p = pose.pitch * rad;
+    const r = pose.roll * rad;
     const forward: Vec = [Math.sin(y) * Math.cos(p), Math.cos(y) * Math.cos(p), Math.sin(p)];
     const right0: Vec = [Math.cos(y), -Math.sin(y), 0];
     const down0 = cross(forward, right0);
@@ -182,12 +186,15 @@ export function project(cam: Camera, point: Vec, outside = 0): { x: number, y: n
  * as horizontal at the height of the point. null when the point is behind the camera.
  */
 export function groundAffine(cam: Camera, point: Vec): { x: number, y: number, A: number[] } {
-    const pixel = (p: Vec) => {
-        const v: Vec = [p[0] - cam.center[0], p[1] - cam.center[1], p[2] - cam.center[2]];
+    const pixel = (q: Vec) => {
+        const v: Vec = [q[0] - cam.center[0], q[1] - cam.center[1], q[2] - cam.center[2]];
         const z = dot(v, cam.forward);
         return z <= 0.1 ? null : [cam.width / 2 + cam.focal * dot(v, cam.right) / z, cam.height / 2 + cam.focal * dot(v, cam.down) / z];
     };
-    const p = pixel(point), e = pixel([point[0] + 0.5, point[1], point[2]]), n = pixel([point[0], point[1] + 0.5, point[2]]);
+    // Pixel of the point and of the points 0.5 m to the east and to the north of it
+    const p = pixel(point);
+    const e = pixel([point[0] + 0.5, point[1], point[2]]);
+    const n = pixel([point[0], point[1] + 0.5, point[2]]);
     if (!p || !e || !n) return null;
     return { x: p[0], y: p[1], A: [(e[0] - p[0]) * 2, (n[0] - p[0]) * 2, (e[1] - p[1]) * 2, (n[1] - p[1]) * 2] };
 }
@@ -207,7 +214,8 @@ export function northUp(cam: Camera, point: Vec): number[] {
         g = groundAffine(cam, [cam.center[0] + t * cam.forward[0], cam.center[1] + t * cam.forward[1], cam.center[2] + t * cam.forward[2]]);
     }
     if (!g) return null;
-    const [a, b, c, d] = g.A, det = a * d - b * c;
+    const [a, b, c, d] = g.A;
+    const det = a * d - b * c;
     if (!isFinite(det) || Math.abs(det) < 1e-9) return null;
 
     const k = Math.sqrt(Math.abs(det)) / det;
@@ -225,7 +233,8 @@ export function centerOffset(cam: Camera, x: number, y: number): number {
 }
 
 function ray(cam: Camera, x: number, y: number): Vec {
-    const a = (x - cam.width / 2) / cam.focal, b = (y - cam.height / 2) / cam.focal;
+    const a = (x - cam.width / 2) / cam.focal;
+    const b = (y - cam.height / 2) / cam.focal;
     const d: Vec = [
         cam.forward[0] + a * cam.right[0] + b * cam.down[0],
         cam.forward[1] + a * cam.right[1] + b * cam.down[1],
@@ -248,11 +257,12 @@ export function locatePoint(tags: { cam: Camera, x: number, y: number }[], maxOf
     if (tags.length === 0) return fallback;
 
     const rays = tags.map(t => ({ c: t.cam.center, d: ray(t.cam, t.x, t.y) }));
-    const trusted = (p: Vec) => p.every(isFinite) && Math.hypot(p[0], p[1]) <= maxOffset && Math.abs(p[2]) <= maxOffset;
+    const trusted = (q: Vec) => q.every(isFinite) && Math.hypot(q[0], q[1]) <= maxOffset && Math.abs(q[2]) <= maxOffset;
 
     if (rays.length >= 2) {
         // Least squares: sum(I - d d^T) P = sum(I - d d^T) C
-        const A = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], b = [0, 0, 0];
+        const A = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+        const b = [0, 0, 0];
         rays.forEach(({ c, d }) => {
             for (let i = 0; i < 3; i++) {
                 for (let j = 0; j < 3; j++) {
@@ -272,8 +282,8 @@ export function locatePoint(tags: { cam: Camera, x: number, y: number }[], maxOf
         rays.forEach(r1 => rays.forEach(r2 => spread = Math.min(spread, dot(r1.d, r2.d))));
         if (spread < MIN_PARALLAX_COS && D > 1e-9) {
             const col = (k: number) => A.map((row, i) => row.map((v, j) => j === k ? b[i] : v));
-            const p: Vec = [det(col(0)) / D, det(col(1)) / D, det(col(2)) / D];
-            if (trusted(p)) return { point: p, from: 'rays' };
+            const closest: Vec = [det(col(0)) / D, det(col(1)) / D, det(col(2)) / D];
+            if (trusted(closest)) return { point: closest, from: 'rays' };
         }
     }
 

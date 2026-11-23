@@ -65,7 +65,7 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
 
     // Options of the dialog of "Detect GCPs based on GPS/EXIF"
     @ViewChild('exifDialog') exifDialog: TemplateRef<any>;
-    public exifMax: number = parseInt(localStorage.getItem("exifMax")) >= 0 ? parseInt(localStorage.getItem("exifMax")) : 20;
+    public exifMax: number = parseInt(localStorage.getItem("exifMax") || "20", 10);
     public exifVisual: boolean = localStorage.getItem("exifVisual") === "1";
 
     // Photos drawn with north up, to compare the same place seen from different sides
@@ -396,10 +396,13 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
         // the photo first (known after "Detect GCPs based on GPS/EXIF"), then by distance, then by name
         const order = (a: ImageDescriptor, b: ImageDescriptor) => {
             if (a.isTagged !== b.isTagged) return a.isTagged ? -1 : 1;
-            const ca = a.centerOffset != null, cb = b.centerOffset != null;
+            const ca = a.centerOffset != null;
+            const cb = b.centerOffset != null;
             if (ca && cb && a.centerOffset !== b.centerOffset) return a.centerOffset > b.centerOffset ? 1 : -1;
             if (ca !== cb) return ca ? -1 : 1;
-            if (this.filterByDistance && a.distance !== null && b.distance !== null && a.distance !== b.distance) return a.distance > b.distance ? 1 : -1;
+            const da = this.filterByDistance ? a.distance : null;
+            const db = this.filterByDistance ? b.distance : null;
+            if (da !== null && db !== null && da !== db) return da > db ? 1 : -1;
             return a.image.imgName.localeCompare(b.image.imgName);
         };
 
@@ -772,7 +775,9 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
                 this.requestedInterrupt = false;
                 return;
             }
-            if (i % 10 === 0) this.setProgress("Reading the pose of the photos (" + (i + 1) + "/" + all.length + ")", i / all.length, false, true);
+            if (i % 10 === 0) {
+                this.setProgress("Reading the pose of the photos (" + (i + 1) + "/" + all.length + ")", i / all.length, false, true);
+            }
 
             await this.camera(name);
         }
@@ -788,18 +793,20 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
 
         // Every image tagged by hand locates the point, also the ones the distance filter hides
         const byHand = all.filter(item => item.isTagged && !item.suggested && this.exifCameras[item.image.imgName]);
-        const located = locatePoint(byHand.map(item => ({ cam: this.exifCameras[item.image.imgName], x: item.image.imX, y: item.image.imY })));
+        const tags = byHand.map(item => ({ cam: this.exifCameras[item.image.imgName], x: item.image.imX, y: item.image.imY }));
+        const located = locatePoint(tags);
 
         this.exifPoint = located.point;
 
-        let suggested = 0, notVisible = 0, noPose = 0;
-
+        let suggested = 0;
+        let notVisible = 0;
+        let noPose = 0;
         let onBorder = 0;
 
         for (const item of all) item.centerOffset = null;
 
         // Images that see the point
-        let candidates: { item: ImageDescriptor, cam: Camera, where: { x: number, y: number, offset: number } }[] = [];
+        const candidates: ExifCandidate[] = [];
 
         for (const item of images) {
             const cam = this.exifCameras[item.image.imgName];
@@ -824,7 +831,7 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
         }
 
         // The limit keeps the images where the point falls closer to the center of the photo
-        candidates.sort((a, b) => a.where.offset - b.where.offset);
+        candidates.sort((x, y) => x.where.offset - y.where.offset);
         const overLimit = this.exifMax > 0 ? candidates.splice(this.exifMax) : [];
         for (const { item, where } of overLimit) {
             if (item.suggested) this.unpin(item);
@@ -838,55 +845,7 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
             if (where.offset > centerOffset(cam, where.x, where.y) + 1e-9) onBorder++;
         }
 
-        // Visual fine adjustment: the ground around a good tag is searched around each suggestion.
-        // The good tag is the most vertical photo tagged by hand; with no photo tagged by hand, the
-        // suggestion closest to the center of its photo, and then all the tags fall on the same detail of
-        // the ground, the one under that suggestion.
-        let visual = '';
-        if (this.exifVisual && candidates.length > 0) {
-            const hand = byHand.slice().sort((a, b) => this.exifCameras[a.image.imgName].forward[2] - this.exifCameras[b.image.imgName].forward[2])[0];
-            const refItem = hand || candidates[0].item;
-            const refMap = groundAffine(this.exifCameras[refItem.image.imgName], located.point);
-            const targets = hand ? candidates : candidates.slice(1);
-            let adjusted = 0, interrupted = false;
-            const shifts: number[] = [];
-
-            try {
-                if (!refMap) throw new Error('the reference photo does not see the point');
-                const ref = await this.detector.visualReference(refItem.image.imgName, refItem.image.imX, refItem.image.imY, refMap.A);
-                try {
-                    for (let i = 0; i < targets.length; i++) {
-                        if (this.requestedInterrupt) {
-                            this.requestedInterrupt = false;
-                            interrupted = true;
-                            break;
-                        }
-                        const { item, cam } = targets[i];
-                        this.setProgress("Visual fine adjustment of " + item.image.imgName + " (" + (i + 1) + "/" + targets.length + ")", i / targets.length, false, true);
-
-                        const map = groundAffine(cam, located.point);
-                        const match = map ? await this.detector.visualMatch(ref, item.image.imgName, item.image.imX, item.image.imY, map.A) : null;
-                        if (match && match.score >= VISUAL_MIN_SCORE && match.x >= 0 && match.y >= 0 && match.x <= cam.width && match.y <= cam.height) {
-                            shifts.push(Math.hypot(match.x - item.image.imX, match.y - item.image.imY));
-                            this.pin({ x: match.x, y: match.y }, item);
-                            item.suggested = true;
-                            adjusted++;
-                        }
-                    }
-                } finally {
-                    ref.delete();
-                }
-                shifts.sort((a, b) => a - b);
-                visual = ` Visual fine adjustment against ${refItem.image.imgName} (${hand ? 'tagged by hand' : 'the most centered suggestion: no image is tagged by hand'}): ` +
-                    `${adjusted} of ${targets.length} suggestions moved` +
-                    (adjusted > 0 ? ` (median ${Math.round(shifts[Math.floor(shifts.length / 2)])} px)` : '') +
-                    `, ${targets.length - adjusted} left where the pose puts them (no clear match)` +
-                    (interrupted ? ', interrupted' : '') + '. Check every tag: a match can sit on a shadow or a similar detail.';
-            } catch (e) {
-                console.warn(e);
-                visual = ' Visual fine adjustment failed: ' + (e && e.message ? e.message : e) + '.';
-            }
-        }
+        const visual = this.exifVisual && candidates.length > 0 ? await this.visualAdjust(byHand, candidates, located.point) : '';
 
         this.filterImages();
         window.dispatchEvent(new CustomEvent('smartImagesLayoutChanged'));
@@ -909,6 +868,63 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
         this.exifResult = result;
 
         this.setProgress("", 1, true);
+    }
+
+    /**
+     * Visual fine adjustment of the suggestions: the ground around a good tag is searched around each
+     * suggestion (visualMatch in gcps-detector.service.ts). The good tag is the most vertical photo tagged
+     * by hand; with none, the suggestion closest to the center of its photo. Returns the sentence for the
+     * result of the detection.
+     */
+    private async visualAdjust(byHand: ImageDescriptor[], candidates: ExifCandidate[], point: Vec): Promise<string> {
+        // The more negative, the more the camera looks down
+        const vertical = (item: ImageDescriptor) => this.exifCameras[item.image.imgName].forward[2];
+        const hand = byHand.slice().sort((a, b) => vertical(a) - vertical(b))[0];
+        const refItem = hand || candidates[0].item;
+        const refMap = groundAffine(this.exifCameras[refItem.image.imgName], point);
+        const targets = hand ? candidates : candidates.slice(1);
+        const shifts: number[] = [];
+        let interrupted = false;
+
+        try {
+            if (!refMap) throw new Error('the reference photo does not see the point');
+            const ref = await this.detector.visualReference(refItem.image.imgName, refItem.image.imX, refItem.image.imY, refMap.A);
+            try {
+                for (let i = 0; i < targets.length; i++) {
+                    if (this.requestedInterrupt) {
+                        this.requestedInterrupt = false;
+                        interrupted = true;
+                        break;
+                    }
+                    const { item, cam } = targets[i];
+                    const name = item.image.imgName;
+                    const counter = " (" + (i + 1) + "/" + targets.length + ")";
+                    this.setProgress("Visual fine adjustment of " + name + counter, i / targets.length, false, true);
+
+                    const map = groundAffine(cam, point);
+                    const match = map ? await this.detector.visualMatch(ref, name, item.image.imX, item.image.imY, map.A) : null;
+                    const inside = match && match.x >= 0 && match.y >= 0 && match.x <= cam.width && match.y <= cam.height;
+                    if (inside && match.score >= VISUAL_MIN_SCORE) {
+                        shifts.push(Math.hypot(match.x - item.image.imX, match.y - item.image.imY));
+                        this.pin({ x: match.x, y: match.y }, item);
+                        item.suggested = true;
+                    }
+                }
+            } finally {
+                ref.delete();
+            }
+        } catch (e) {
+            console.warn(e);
+            return ' Visual fine adjustment failed: ' + (e && e.message ? e.message : e) + '.';
+        }
+
+        shifts.sort((a, b) => a - b);
+        const against = hand ? 'tagged by hand' : 'the most centered suggestion: no image is tagged by hand';
+        return ` Visual fine adjustment against ${refItem.image.imgName} (${against}): ` +
+            `${shifts.length} of ${targets.length} suggestions moved` +
+            (shifts.length > 0 ? ` (median ${Math.round(shifts[Math.floor(shifts.length / 2)])} px)` : '') +
+            `, ${targets.length - shifts.length} left where the pose puts them (no clear match)` +
+            (interrupted ? ', interrupted' : '') + '. Check every tag: a match can sit on a shadow or a similar detail.';
     }
 
     public requestedInterrupt: boolean = false;
@@ -940,6 +956,13 @@ export class ImagesTaggerComponent implements OnInit, OnDestroy {
         }
     }
 
+}
+
+// An image that sees the point in "Detect GCPs based on GPS/EXIF", and where the point falls in it
+interface ExifCandidate {
+    item: ImageDescriptor;
+    cam: Camera;
+    where: { x: number, y: number, offset: number };
 }
 
 class ImageDescriptor {

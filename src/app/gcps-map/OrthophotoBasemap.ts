@@ -52,8 +52,8 @@ export async function listOrthoTasks(): Promise<OrthoTask[]> {
     const projects = asList(await getJson('/api/projects/?ordering=-created_at'));
     const perProject = await Promise.all(projects.map(async p => {
         try {
-            const tasks = asList(await getJson(`/api/projects/${p.id}/tasks/?ordering=-created_at`));
-            return tasks
+            const list = asList(await getJson(`/api/projects/${p.id}/tasks/?ordering=-created_at`));
+            return list
                 .filter(t => Array.isArray(t.available_assets) && t.available_assets.indexOf('orthophoto.tif') !== -1)
                 .map(t => ({ projectId: p.id, projectName: p.name, id: t.id, name: t.name || t.id }));
         } catch (e) {
@@ -137,7 +137,8 @@ export async function geoTiffOrthoSource(file: File, epsgToProj4: (code: number)
     // Georeference: origin at the top-left corner, resolution per pixel (resY negative)
     const [oX, oY] = first.getOrigin();
     const [rX, rY] = first.getResolution();
-    const fullW: number = first.getWidth(), fullH: number = first.getHeight();
+    const fullW: number = first.getWidth();
+    const fullH: number = first.getHeight();
     if (!isFinite(oX) || !isFinite(rX) || rX === 0 || rY === 0) throw new Error('This TIFF is not georeferenced.');
 
     // Full image + reduced-resolution overviews, finest first
@@ -155,7 +156,8 @@ export async function geoTiffOrthoSource(file: File, epsgToProj4: (code: number)
     const [minX, minY, maxX, maxY] = first.getBoundingBox();
     const toMap = proj4(def, 'EPSG:4326');
     const corners = [[minX, minY], [minX, maxY], [maxX, minY], [maxX, maxY]].map(c => toMap.forward(c));
-    const lons = corners.map(c => c[0]), lats = corners.map(c => c[1]);
+    const lons = corners.map(c => c[0]);
+    const lats = corners.map(c => c[1]);
     const bounds = L.latLngBounds(L.latLng(Math.min(...lats), Math.min(...lons)), L.latLng(Math.max(...lats), Math.max(...lons)));
     if (!bounds.isValid()) throw new Error('Cannot place this TIFF on the map.');
 
@@ -172,7 +174,8 @@ export async function geoTiffOrthoSource(file: File, epsgToProj4: (code: number)
 
             // Tile corners in the coordinates of the file: top-left, top-right, bottom-left, bottom-right
             const map: L.Map = this._map;
-            const px = coords.x * TILE, py = coords.y * TILE;
+            const px = coords.x * TILE;
+            const py = coords.y * TILE;
             const c = [[px, py], [px + TILE, py], [px, py + TILE], [px + TILE, py + TILE]].map(p => {
                 const ll = map.unproject(L.point(p[0], p[1]), coords.z);
                 const xy = toSrc.forward([ll.lng, ll.lat]);
@@ -180,8 +183,12 @@ export async function geoTiffOrthoSource(file: File, epsgToProj4: (code: number)
                 return [(xy[0] - oX) / rX, (xy[1] - oY) / rY];
             });
 
-            const cols = c.map(p => p[0]), rows = c.map(p => p[1]);
-            const c0 = Math.min(...cols), c1 = Math.max(...cols), r0 = Math.min(...rows), r1 = Math.max(...rows);
+            const cols = c.map(p => p[0]);
+            const rows = c.map(p => p[1]);
+            const c0 = Math.min(...cols);
+            const c1 = Math.max(...cols);
+            const r0 = Math.min(...rows);
+            const r1 = Math.max(...rows);
             if (!(c1 > 0 && r1 > 0 && c0 < fullW && r0 < fullH)) {
                 setTimeout(() => done(null, canvas), 0);
                 return canvas;
@@ -193,12 +200,14 @@ export async function geoTiffOrthoSource(file: File, epsgToProj4: (code: number)
             for (const l of levels) {
                 if (l.scale <= wanted) level = l;
             }
-            const sx = fullW / level.image.getWidth(), sy = fullH / level.image.getHeight();
+            const sx = fullW / level.image.getWidth();
+            const sy = fullH / level.image.getHeight();
             const w = [
                 Math.max(0, Math.floor(c0 / sx)), Math.max(0, Math.floor(r0 / sy)),
                 Math.min(level.image.getWidth(), Math.ceil(c1 / sx) + 1), Math.min(level.image.getHeight(), Math.ceil(r1 / sy) + 1)
             ];
-            const ww = w[2] - w[0], wh = w[3] - w[1];
+            const ww = w[2] - w[0];
+            const wh = w[3] - w[1];
             if (ww <= 0 || wh <= 0 || ww * wh > MAX_WINDOW_PIXELS) {
                 setTimeout(() => done(null, canvas), 0);
                 return canvas;
@@ -212,8 +221,10 @@ export async function geoTiffOrthoSource(file: File, epsgToProj4: (code: number)
                 for (let j = 0; j < TILE; j++) {
                     const v = (j + 0.5) / TILE;
                     // Left and right ends of this row, between the tile corners
-                    const lc = c[0][0] + (c[2][0] - c[0][0]) * v, lr = c[0][1] + (c[2][1] - c[0][1]) * v;
-                    const rc = c[1][0] + (c[3][0] - c[1][0]) * v, rr = c[1][1] + (c[3][1] - c[1][1]) * v;
+                    const lc = c[0][0] + (c[2][0] - c[0][0]) * v;
+                    const lr = c[0][1] + (c[2][1] - c[0][1]) * v;
+                    const rc = c[1][0] + (c[3][0] - c[1][0]) * v;
+                    const rr = c[1][1] + (c[3][1] - c[1][1]) * v;
 
                     for (let i = 0; i < TILE; i++) {
                         const u = (i + 0.5) / TILE;
